@@ -140,7 +140,6 @@ const Home = () => {
   const [loading, setLoading] = useState(true);
   const [centerIndex, setCenterIndex] = useState(0);
   const [isHovered, setIsHovered] = useState(false);
-  const [trackOffset, setTrackOffset] = useState(0);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [transitionSpeed, setTransitionSpeed] = useState(600);
   const navigate = useNavigate();
@@ -224,6 +223,7 @@ const Home = () => {
       }, 5000);
       return () => clearInterval(timer);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topProducts, centerIndex, isHovered, isTransitioning]);
 
   const handleNext = (manual = true) => {

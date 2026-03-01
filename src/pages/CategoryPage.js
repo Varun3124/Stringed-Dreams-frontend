@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
 import ProductCard from '../components/ProductCard';
@@ -9,11 +9,7 @@ const CategoryPage = () => {
   const [loading, setLoading] = useState(true);
   const [categoryInfo, setCategoryInfo] = useState(null);
 
-  useEffect(() => {
-    fetchCategoryProducts();
-  }, [categoryName]);
-
-  const fetchCategoryProducts = async () => {
+  const fetchCategoryProducts = useCallback(async () => {
     try {
       setLoading(true);
       
@@ -33,7 +29,11 @@ const CategoryPage = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [categoryName]);
+
+  useEffect(() => {
+    fetchCategoryProducts();
+  }, [fetchCategoryProducts]);
 
   if (loading) {
     return <div className="loading">Loading {categoryName}...</div>;

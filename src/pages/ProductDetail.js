@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { FaHeart, FaRegHeart, FaArrowLeft, FaEnvelope, FaPlus, FaListUl } from 'react-icons/fa';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -37,17 +37,7 @@ const ProductDetail = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showCollectionDropdown]);
 
-  useEffect(() => {
-    fetchProduct();
-  }, [id]);
-
-  useEffect(() => {
-    if (product && user) {
-      setIsFavorited(checkIsFavorite(product._id));
-    }
-  }, [product, user, checkIsFavorite]);
-
-  const fetchProduct = async () => {
+  const fetchProduct = useCallback(async () => {
     try {
       const { data } = await axios.get(`/api/products/${id}`);
       setProduct(data);
@@ -56,7 +46,17 @@ const ProductDetail = () => {
       setMessage({ type: 'error', text: 'Failed to load product' });
       setLoading(false);
     }
-  };
+  }, [id]);
+
+  useEffect(() => {
+    fetchProduct();
+  }, [fetchProduct]);
+
+  useEffect(() => {
+    if (product && user) {
+      setIsFavorited(checkIsFavorite(product._id));
+    }
+  }, [product, user, checkIsFavorite]);
 
   const handleToggleFavorite = async () => {
     if (!user) {

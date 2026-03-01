@@ -1,4 +1,4 @@
-import React, { createContext, useState, useContext, useEffect } from 'react';
+import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { useAuth } from './AuthContext';
 
@@ -16,15 +16,7 @@ export const FavoritesProvider = ({ children }) => {
   const [favorites, setFavorites] = useState({ items: [] });
   const { user } = useAuth();
 
-  useEffect(() => {
-    if (user) {
-      fetchFavorites();
-    } else {
-      setFavorites({ items: [] });
-    }
-  }, [user]);
-
-  const fetchFavorites = async () => {
+  const fetchFavorites = useCallback(async () => {
     try {
       const config = {
         headers: {
@@ -36,7 +28,15 @@ export const FavoritesProvider = ({ children }) => {
     } catch (error) {
       console.error('Error fetching favorites:', error);
     }
-  };
+  }, [user]);
+
+  useEffect(() => {
+    if (user) {
+      fetchFavorites();
+    } else {
+      setFavorites({ items: [] });
+    }
+  }, [user, fetchFavorites]);
 
   const toggleFavorite = async (productId) => {
     // Optimistic update
