@@ -1,5 +1,5 @@
 import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
-import axios from 'axios';
+import axios from '../api/axios';
 import { useAuth } from './AuthContext';
 
 const PlaylistContext = createContext();

@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
 import { useFavorites } from '../context/FavoritesContext';
 import { useTheme } from '../context/ThemeContext';
-import axios from 'axios';
+import axios from '../api/axios';
 
 const Header = () => {
   const { user, logout } = useAuth();

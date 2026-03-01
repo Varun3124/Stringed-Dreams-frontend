@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import axios from 'axios';
+import axios from '../api/axios';
 import ProductCard from '../components/ProductCard';
 
 const CategoryPage = () => {

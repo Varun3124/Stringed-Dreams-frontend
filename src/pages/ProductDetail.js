@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { FaHeart, FaRegHeart, FaArrowLeft, FaEnvelope, FaPlus, FaListUl } from 'react-icons/fa';
 import { motion, AnimatePresence } from 'framer-motion';
-import axios from 'axios';
+import axios from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 import { useFavorites } from '../context/FavoritesContext';
 import { usePlaylists } from '../context/PlaylistContext';

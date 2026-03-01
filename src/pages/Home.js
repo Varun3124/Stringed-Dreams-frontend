@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import axios from 'axios';
+import axios from '../api/axios';
 import { FaChevronLeft, FaChevronRight } from 'react-icons/fa';
 import { motion } from 'framer-motion';
 import ProductCard from '../components/ProductCard';

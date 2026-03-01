@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
-import axios from 'axios';
+import axios from '../api/axios';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   FaPlus, FaEdit, FaTrash, FaTimes, FaChevronDown, FaChevronRight,
