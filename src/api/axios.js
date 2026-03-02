@@ -1,9 +1,14 @@
 import axios from 'axios';
 
-console.log('[DEBUG] REACT_APP_API_URL =', process.env.REACT_APP_API_URL);
+// Ensure the URL has a protocol prefix
+let apiUrl = process.env.REACT_APP_API_URL || '';
+if (apiUrl && !apiUrl.startsWith('http://') && !apiUrl.startsWith('https://')) {
+  apiUrl = 'https://' + apiUrl;
+}
+console.log('[DEBUG] REACT_APP_API_URL =', process.env.REACT_APP_API_URL, '→ resolved:', apiUrl);
 
 const api = axios.create({
-  baseURL: process.env.REACT_APP_API_URL || '',
+  baseURL: apiUrl,
 });
 
 // Log every request and response for debugging
