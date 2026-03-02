@@ -162,10 +162,12 @@ const Home = () => {
 
   const fetchCategories = async () => {
     try {
+      console.log('[DEBUG] Fetching categories...');
       const { data } = await axios.get('/api/products/categories');
+      console.log('[DEBUG] Categories response:', { isArray: Array.isArray(data), count: Array.isArray(data) ? data.length : 'N/A', data });
       setCategories(Array.isArray(data) ? data : []);
     } catch (error) {
-      console.error('Failed to load categories:', error);
+      console.error('[DEBUG] Failed to load categories:', error.message, error.response?.status, error.response?.data);
     } finally {
       setLoading(false);
     }
@@ -173,12 +175,16 @@ const Home = () => {
 
   const fetchTopProducts = async () => {
     try {
+      console.log('[DEBUG] Fetching top products...');
       const { data } = await axios.get('/api/products');
       const products = Array.isArray(data) ? data : [];
+      console.log('[DEBUG] Top products raw:', { isArray: Array.isArray(data), totalCount: products.length });
       // Get featured products sorted by carousel order
       const featuredProducts = products
         .filter(product => product.featuredInCarousel && product.stock > 0)
         .sort((a, b) => a.carouselOrder - b.carouselOrder);
+      
+      console.log('[DEBUG] Featured products:', featuredProducts.length, 'In-stock products:', products.filter(p => p.stock > 0).length);
       
       // If no featured products, fallback to top rated
       if (featuredProducts.length === 0) {
@@ -186,21 +192,24 @@ const Home = () => {
           .filter(product => product.stock > 0)
           .sort((a, b) => b.rating - a.rating)
           .slice(0, 5);
+        console.log('[DEBUG] Using fallback top rated:', sortedProducts.length);
         setTopProducts(sortedProducts);
       } else {
         setTopProducts(featuredProducts);
       }
     } catch (error) {
-      console.error('Failed to load top products:', error);
+      console.error('[DEBUG] Failed to load top products:', error.message, error.response?.status, error.response?.data);
     }
   };
 
   const fetchAllProducts = async () => {
     try {
+      console.log('[DEBUG] Fetching all products...');
       const { data } = await axios.get('/api/products');
+      console.log('[DEBUG] All products response:', { isArray: Array.isArray(data), count: Array.isArray(data) ? data.length : 'N/A' });
       setAllProducts(Array.isArray(data) ? data : []);
     } catch (error) {
-      console.error('Failed to load products:', error);
+      console.error('[DEBUG] Failed to load all products:', error.message, error.response?.status, error.response?.data);
     }
   };
 
