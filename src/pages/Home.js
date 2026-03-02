@@ -163,7 +163,7 @@ const Home = () => {
   const fetchCategories = async () => {
     try {
       const { data } = await axios.get('/api/products/categories');
-      setCategories(data);
+      setCategories(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Failed to load categories:', error);
     } finally {
@@ -174,14 +174,15 @@ const Home = () => {
   const fetchTopProducts = async () => {
     try {
       const { data } = await axios.get('/api/products');
+      const products = Array.isArray(data) ? data : [];
       // Get featured products sorted by carousel order
-      const featuredProducts = data
+      const featuredProducts = products
         .filter(product => product.featuredInCarousel && product.stock > 0)
         .sort((a, b) => a.carouselOrder - b.carouselOrder);
       
       // If no featured products, fallback to top rated
       if (featuredProducts.length === 0) {
-        const sortedProducts = data
+        const sortedProducts = products
           .filter(product => product.stock > 0)
           .sort((a, b) => b.rating - a.rating)
           .slice(0, 5);
@@ -197,7 +198,7 @@ const Home = () => {
   const fetchAllProducts = async () => {
     try {
       const { data } = await axios.get('/api/products');
-      setAllProducts(data);
+      setAllProducts(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Failed to load products:', error);
     }
