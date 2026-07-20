@@ -4,6 +4,13 @@ import { useAuth } from './AuthContext';
 
 const FavoritesContext = createContext();
 
+const getFavoriteProductId = (item) => item?.product?._id || item?.product || null;
+
+const normalizeFavorites = (favoritesData) => ({
+  ...(favoritesData || { items: [] }),
+  items: (favoritesData?.items || []).filter(item => getFavoriteProductId(item))
+});
+
 export const useFavorites = () => {
   const context = useContext(FavoritesContext);
   if (!context) {
@@ -24,7 +31,7 @@ export const FavoritesProvider = ({ children }) => {
         }
       };
       const { data } = await axios.get('/api/favorites', config);
-      setFavorites(data);
+      setFavorites(normalizeFavorites(data));
     } catch (error) {
       console.error('Error fetching favorites:', error);
     }
@@ -47,7 +54,7 @@ export const FavoritesProvider = ({ children }) => {
       setFavorites(prev => ({
         ...prev,
         items: prev.items.filter(item => {
-          const pid = item.product?._id || item.product;
+          const pid = getFavoriteProductId(item);
           return pid !== productId;
         })
       }));
@@ -65,7 +72,7 @@ export const FavoritesProvider = ({ children }) => {
         }
       };
       const { data } = await axios.post('/api/favorites/toggle', { productId }, config);
-      setFavorites(data.favorites);
+      setFavorites(normalizeFavorites(data.favorites));
       return { success: true, isFavorite: data.isFavorite, message: data.message };
     } catch (error) {
       // Revert on failure
@@ -85,7 +92,7 @@ export const FavoritesProvider = ({ children }) => {
         }
       };
       const { data } = await axios.delete(`/api/favorites/${itemId}`, config);
-      setFavorites(data);
+      setFavorites(normalizeFavorites(data));
       return { success: true };
     } catch (error) {
       return {
@@ -96,7 +103,7 @@ export const FavoritesProvider = ({ children }) => {
   };
 
   const isFavorite = (productId) => {
-    return favorites.items?.some(item => item.product._id === productId || item.product === productId);
+    return favorites.items?.some(item => getFavoriteProductId(item) === productId);
   };
 
   const value = {

@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   FaPlus, FaEdit, FaTrash, FaTimes, FaChevronDown, FaChevronRight,
   FaGripVertical, FaCopy, FaFileImport, FaInbox, FaBoxes,
-  FaUpload, FaFileExcel, FaEye, FaReply, FaClock, FaCheckCircle
+  FaUpload, FaEye, FaReply, FaClock, FaCheckCircle
 } from 'react-icons/fa';
 import {
   DndContext, closestCenter, KeyboardSensor, PointerSensor, TouchSensor, useSensor, useSensors,
@@ -15,13 +15,14 @@ import {
   arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import * as XLSX from 'xlsx';
-
 /* ─── Inline Editable Cell ─── */
 const InlineEditCell = ({ value, onSave, type = 'text' }) => {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(value);
+  const [isLongPressing, setIsLongPressing] = useState(false);
   const inputRef = useRef(null);
+  const touchTimerRef = useRef(null);
+  const isMobileRef = useRef(typeof window !== 'undefined' && window.innerWidth < 768);
 
   useEffect(() => {
     if (editing && inputRef.current) inputRef.current.focus();
@@ -29,7 +30,23 @@ const InlineEditCell = ({ value, onSave, type = 'text' }) => {
 
   const save = () => {
     setEditing(false);
+    setIsLongPressing(false);
     if (editValue !== value) onSave(editValue);
+  };
+
+  const handleTouchStart = () => {
+    if (!isMobileRef.current) return;
+    setIsLongPressing(true);
+    touchTimerRef.current = setTimeout(() => {
+      setEditing(true);
+      setIsLongPressing(false);
+    }, 500);
+  };
+
+  const handleTouchEnd = () => {
+    if (!isMobileRef.current) return;
+    setIsLongPressing(false);
+    if (touchTimerRef.current) clearTimeout(touchTimerRef.current);
   };
 
   if (editing) {
@@ -48,10 +65,11 @@ const InlineEditCell = ({ value, onSave, type = 'text' }) => {
 
   return (
     <span
-      className="inline-edit-cell"
-      onDoubleClick={() => setEditing(true)}
-      onTouchEnd={(e) => { e.preventDefault(); setEditing(true); }}
-      title="Tap or double-click to edit"
+      className={`inline-edit-cell ${isLongPressing ? 'mobile-long-press-active' : ''}`}
+      onDoubleClick={() => !isMobileRef.current && setEditing(true)}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+      title={isMobileRef.current ? 'Long-press to edit' : 'Double-click to edit'}
     >
       {value || '-'}
     </span>
@@ -59,8 +77,10 @@ const InlineEditCell = ({ value, onSave, type = 'text' }) => {
 };
 
 /* ─── Sortable Product Row ─── */
-const SortableProductRow = ({ product, user, fetchProducts, handleEditProduct, handleDeleteProduct, handleDuplicateProduct, handleMoveToLast, categories }) => {
+const SortableProductRow = ({ product, user, fetchProducts, handleDeleteProduct, handleDuplicateProduct, handleMoveToLast, onImageClick, categories }) => {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: product._id });
+  const touchTimerRef = useRef(null);
+  const [isDragPressed, setIsDragPressed] = useState(false);
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -88,13 +108,25 @@ const SortableProductRow = ({ product, user, fetchProducts, handleEditProduct, h
     }
   };
 
+  const handleDragGripTouchStart = () => {
+    setIsDragPressed(true);
+    touchTimerRef.current = setTimeout(() => {
+      setIsDragPressed(false);
+    }, 250);
+  };
+
+  const handleDragGripTouchEnd = () => {
+    setIsDragPressed(false);
+    if (touchTimerRef.current) clearTimeout(touchTimerRef.current);
+  };
+
   return (
     <tr ref={setNodeRef} style={style} className={isDragging ? 'row-dragging' : ''}>
-      <td {...attributes} {...listeners} style={{ cursor: 'grab', textAlign: 'center' }}>
+      <td {...attributes} {...listeners} onTouchStart={handleDragGripTouchStart} onTouchEnd={handleDragGripTouchEnd} style={{ cursor: 'grab', textAlign: 'center' }} className={isDragPressed ? 'drag-pressed' : ''}>
         <FaGripVertical style={{ color: 'var(--text-muted)' }} />
       </td>
       <td>
-        <img src={product.image} alt={product.name} className="product-thumb" />
+        <img src={product.image} alt={product.name} className="product-thumb" onClick={() => onImageClick(product)} style={{ cursor: 'pointer' }} title="Click to view/edit product image" />
       </td>
       <td><InlineEditCell value={product.name} onSave={(v) => handleInlineSave('name', v)} /></td>
       <td><InlineEditCell value={product.color || ''} onSave={(v) => handleInlineSave('color', v)} /></td>
@@ -144,9 +176,6 @@ const SortableProductRow = ({ product, user, fetchProducts, handleEditProduct, h
       </td>
       <td>
         <div className="action-buttons">
-          <button className="btn-icon btn-edit" onClick={() => handleEditProduct(product)} title="Edit product">
-            <FaEdit />
-          </button>
           <button className="btn-icon btn-duplicate" onClick={() => handleDuplicateProduct(product._id)} title="Duplicate product">
             <FaCopy />
           </button>
@@ -171,15 +200,20 @@ const Admin = () => {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
 
-  // Product form state
+  // Product form state (for creating new products only)
   const [showProductForm, setShowProductForm] = useState(false);
-  const [editingProduct, setEditingProduct] = useState(null);
   const [, setImageFile] = useState(null);
   const [imagePreview, setImagePreview] = useState('');
   const [productForm, setProductForm] = useState({
     name: '', description: '', price: '', category: '', color: '', beadType: '',
     image: '', stock: '', featuredInCarousel: false, carouselOrder: 0, displayOrder: 0
   });
+
+  // Image preview modal state
+  const [selectedImageProduct, setSelectedImageProduct] = useState(null);
+  const [imageModalPreview, setImageModalPreview] = useState('');
+  const [imageModalDescEdit, setImageModalDescEdit] = useState('');
+  const imageFileInputRef = useRef(null);
 
   // Category form state
   const [showCategoryForm, setShowCategoryForm] = useState(false);
@@ -189,8 +223,11 @@ const Admin = () => {
   // Bulk import state
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [bulkStep, setBulkStep] = useState(1); // 1=upload, 2=preview, 3=importing
-  const [bulkData, setBulkData] = useState([]);
+  const [bulkCategory, setBulkCategory] = useState('');
+  const [bulkImages, setBulkImages] = useState([]);
+  const [bulkDragActive, setBulkDragActive] = useState(false);
   const [bulkImporting, setBulkImporting] = useState(false);
+  const bulkFileInputRef = useRef(null);
 
   // Inquiries state
   const [inquiries, setInquiries] = useState([]);
@@ -288,6 +325,13 @@ const Admin = () => {
     }
   };
 
+  const readFileAsDataURL = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
+
   // DnD
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -326,46 +370,6 @@ const Admin = () => {
   };
 
   // Product CRUD
-  const handleProductSubmit = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    try {
-      if (!user?.token) { showMsg('error', 'No auth token'); return; }
-      const productData = { ...productForm, image: imagePreview || productForm.image };
-      if (editingProduct) {
-        await axios.put(`/api/admin/products/${editingProduct._id}`, productData, { headers: { Authorization: `Bearer ${user.token}` } });
-        showMsg('success', 'Product updated');
-      } else {
-        await axios.post('/api/admin/products', productData, { headers: { Authorization: `Bearer ${user.token}` } });
-        showMsg('success', 'Product created');
-      }
-      resetProductForm();
-      // If stock is 0, move to last in category
-      if (parseInt(productData.stock) === 0 && productData.category) {
-        await fetchProducts();
-        const catProducts = products.filter(p => p.category === productData.category).sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
-        const target = catProducts.find(p => editingProduct ? p._id === editingProduct._id : p.name === productData.name);
-        if (target) await handleMoveToLast(target);
-      } else {
-        fetchProducts();
-      }
-    } catch (error) { showMsg('error', error.response?.data?.message || 'Operation failed'); }
-    finally { setLoading(false); }
-  };
-
-  const handleEditProduct = (product) => {
-    setEditingProduct(product);
-    setProductForm({
-      name: product.name, description: product.description, price: product.price,
-      category: product.category, color: product.color || '', beadType: product.beadType || '',
-      image: product.image, stock: product.stock, featuredInCarousel: product.featuredInCarousel || false,
-      carouselOrder: product.carouselOrder || 0, displayOrder: product.displayOrder || 0
-    });
-    setImagePreview(product.image);
-    setImageFile(null);
-    setShowProductForm(true);
-  };
-
   const handleDeleteProduct = async (id) => {
     if (!window.confirm('Delete this product?')) return;
     try {
@@ -383,12 +387,26 @@ const Admin = () => {
     } catch (error) { showMsg('error', error.response?.data?.message || 'Failed to duplicate'); }
   };
 
+  /* ─── Product Creation Form ─── */
+  const handleProductSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      if (!user?.token) { showMsg('error', 'No auth token'); return; }
+      const productData = { ...productForm, image: imagePreview || productForm.image };
+      await axios.post('/api/admin/products', productData, { headers: { Authorization: `Bearer ${user.token}` } });
+      showMsg('success', 'Product created');
+      resetProductForm();
+      fetchProducts();
+    } catch (error) { showMsg('error', error.response?.data?.message || 'Operation failed'); }
+    finally { setLoading(false); }
+  };
+
   const resetProductForm = () => {
     setProductForm({
       name: '', description: '', price: '', category: '', color: '', beadType: '',
       image: '', stock: '', featuredInCarousel: false, carouselOrder: 0, displayOrder: 0
     });
-    setEditingProduct(null);
     setImageFile(null);
     setImagePreview('');
     setShowProductForm(false);
@@ -436,47 +454,65 @@ const Admin = () => {
   };
 
   /* ─── Bulk Import ─── */
-  const handleBulkFileUpload = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      try {
-        const workbook = XLSX.read(evt.target.result, { type: 'binary' });
-        const sheetName = workbook.SheetNames[0];
-        const sheet = workbook.Sheets[sheetName];
-        const jsonData = XLSX.utils.sheet_to_json(sheet);
+  const handleBulkFilesSelected = async (fileList) => {
+    const files = Array.from(fileList || []).filter((file) => file.type.startsWith('image/'));
+    if (!files.length) {
+      showMsg('error', 'Please choose at least one image file');
+      return;
+    }
 
-        // Map columns
-        const mapped = jsonData.map(row => ({
-          name: row.name || row.Name || row.PRODUCT || row.product || '',
-          description: row.description || row.Description || row.desc || 'Beautiful handmade bead jewelry',
-          price: parseFloat(row.price || row.Price || row.PRICE || 0),
-          category: row.category || row.Category || row.CATEGORY || (categories.length > 0 ? categories[0].name : ''),
-          color: row.color || row.Color || row.COLOR || '',
-          beadType: row.beadType || row.bead_type || row['Bead Type'] || row.BeadType || '',
-          stock: parseInt(row.stock || row.Stock || row.STOCK || 10),
-          image: row.image || row.Image || row.IMAGE || row.image_url || '',
-        })).filter(r => r.name);
+    try {
+      const selectedImages = await Promise.all(
+        files.map(async (file) => ({
+          name: file.name,
+          preview: await readFileAsDataURL(file)
+        }))
+      );
+      setBulkImages(selectedImages);
+      setBulkStep(2);
+    } catch (error) {
+      showMsg('error', 'Failed to read one or more images');
+    }
+  };
 
-        setBulkData(mapped);
-        setBulkStep(2);
-      } catch (err) {
-        showMsg('error', 'Failed to parse file. Ensure it is a valid Excel/CSV.');
-      }
-    };
-    reader.readAsBinaryString(file);
+  const handleBulkInputChange = (e) => {
+    handleBulkFilesSelected(e.target.files);
+    e.target.value = '';
+  };
+
+  const handleBulkDrop = async (e) => {
+    e.preventDefault();
+    setBulkDragActive(false);
+    await handleBulkFilesSelected(e.dataTransfer.files);
   };
 
   const handleBulkImport = async () => {
+    if (!bulkCategory) {
+      showMsg('error', 'Please choose a category for this batch');
+      return;
+    }
+
+    if (bulkImages.length === 0) {
+      showMsg('error', 'Please add at least one image');
+      return;
+    }
+
     setBulkImporting(true);
     setBulkStep(3);
     try {
-      const { data } = await axios.post('/api/admin/products/bulk', { products: bulkData }, { headers: { Authorization: `Bearer ${user.token}` } });
-      showMsg('success', `${data.created?.length || bulkData.length} products imported!`);
-      setShowBulkImport(false);
-      setBulkStep(1);
-      setBulkData([]);
+      const productsPayload = bulkImages.map((image) => ({
+        image: image.preview,
+        category: bulkCategory
+      }));
+      const { data } = await axios.post(
+        '/api/admin/products/bulk',
+        { category: bulkCategory, products: productsPayload },
+        { headers: { Authorization: `Bearer ${user.token}` } }
+      );
+      const createdCount = data.created || 0;
+      const failedCount = data.failed || 0;
+      showMsg('success', `${createdCount} products created${failedCount ? `, ${failedCount} failed` : ''}`);
+      resetBulkImport();
       fetchProducts();
     } catch (error) {
       showMsg('error', error.response?.data?.message || 'Bulk import failed');
@@ -488,7 +524,61 @@ const Admin = () => {
   const resetBulkImport = () => {
     setShowBulkImport(false);
     setBulkStep(1);
-    setBulkData([]);
+    setBulkCategory('');
+    setBulkImages([]);
+    setBulkDragActive(false);
+  };
+
+  /* ─── Image Preview Modal Handlers ─── */
+  const handleImageClick = (product) => {
+    setSelectedImageProduct(product);
+    setImageModalPreview(product.image);
+    setImageModalDescEdit(product.description || '');
+  };
+
+  const handleImageModalDescSave = async (newDesc) => {
+    if (!selectedImageProduct) return;
+    try {
+      await axios.put(
+        `/api/admin/products/${selectedImageProduct._id}`,
+        { description: newDesc },
+        { headers: { Authorization: `Bearer ${user.token}` } }
+      );
+      setSelectedImageProduct(prev => ({ ...prev, description: newDesc }));
+      fetchProducts();
+      showMsg('success', 'Description updated');
+    } catch (error) {
+      showMsg('error', error.response?.data?.message || 'Failed to update description');
+    }
+  };
+
+  const handleImageModalImageUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file || !selectedImageProduct) return;
+    try {
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64Image = reader.result;
+        await axios.put(
+          `/api/admin/products/${selectedImageProduct._id}`,
+          { image: base64Image },
+          { headers: { Authorization: `Bearer ${user.token}` } }
+        );
+        setImageModalPreview(base64Image);
+        setSelectedImageProduct(prev => ({ ...prev, image: base64Image }));
+        fetchProducts();
+        showMsg('success', 'Image updated');
+      };
+      reader.readAsDataURL(file);
+    } catch (error) {
+      showMsg('error', error.response?.data?.message || 'Failed to upload image');
+    }
+  };
+
+  const closeImageModal = () => {
+    setSelectedImageProduct(null);
+    setImageModalPreview('');
+    setImageModalDescEdit('');
   };
 
   /* ─── Inquiries ─── */
@@ -649,41 +739,43 @@ const Admin = () => {
                         {categoryProducts.length === 0 ? (
                           <div className="empty-message">No products in this category</div>
                         ) : (
-                          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => handleDragEnd(event, category.name)}>
-                            <table className="products-table">
-                              <thead>
-                                <tr>
-                                  <th style={{ width: '40px' }}></th>
-                                  <th>Image</th>
-                                  <th>Name</th>
-                                  <th>Color</th>
-                                  <th>Bead Type</th>
-                                  <th>Price</th>
-                                  <th>Stock</th>
-                                  <th>Featured</th>
-                                  <th>Order</th>
-                                  <th>Actions</th>
-                                </tr>
-                              </thead>
-                              <SortableContext items={categoryProducts.map(p => p._id)} strategy={verticalListSortingStrategy}>
-                                <tbody>
-                                  {categoryProducts.map((product) => (
-                                    <SortableProductRow
-                                      key={product._id}
-                                      product={product}
-                                      user={user}
-                                      fetchProducts={fetchProducts}
-                                      handleEditProduct={handleEditProduct}
-                                      handleDeleteProduct={handleDeleteProduct}
-                                      handleDuplicateProduct={handleDuplicateProduct}
-                                      handleMoveToLast={handleMoveToLast}
-                                      categories={categories}
-                                    />
-                                  ))}
-                                </tbody>
-                              </SortableContext>
-                            </table>
-                          </DndContext>
+                          <div className="products-table-scroll-container">
+                            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => handleDragEnd(event, category.name)}>
+                              <table className="products-table">
+                                <thead>
+                                  <tr>
+                                    <th style={{ width: '40px' }}></th>
+                                    <th>Image</th>
+                                    <th>Name</th>
+                                    <th>Color</th>
+                                    <th>Bead Type</th>
+                                    <th>Price</th>
+                                    <th>Stock</th>
+                                    <th>Featured</th>
+                                    <th>Order</th>
+                                    <th>Actions</th>
+                                  </tr>
+                                </thead>
+                                <SortableContext items={categoryProducts.map(p => p._id)} strategy={verticalListSortingStrategy}>
+                                  <tbody>
+                                    {categoryProducts.map((product) => (
+                                      <SortableProductRow
+                                        key={product._id}
+                                        product={product}
+                                        user={user}
+                                        fetchProducts={fetchProducts}
+                                        handleDeleteProduct={handleDeleteProduct}
+                                        handleDuplicateProduct={handleDuplicateProduct}
+                                        handleMoveToLast={handleMoveToLast}
+                                        onImageClick={handleImageClick}
+                                        categories={categories}
+                                      />
+                                    ))}
+                                  </tbody>
+                                </SortableContext>
+                              </table>
+                            </DndContext>
+                          </div>
                         )}
                       </motion.div>
                     )}
@@ -816,7 +908,7 @@ const Admin = () => {
           <motion.div className="modal-overlay" onClick={resetProductForm} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <motion.div className="modal-content" onClick={(e) => e.stopPropagation()} initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} transition={{ type: 'spring', damping: 25 }}>
               <div className="modal-header">
-                <h3>{editingProduct ? 'Edit Product' : 'Add New Product'}</h3>
+                <h3>Add New Product</h3>
                 <button className="close-btn" onClick={resetProductForm}><FaTimes /></button>
               </div>
               <form onSubmit={handleProductSubmit}>
@@ -881,9 +973,55 @@ const Admin = () => {
                 </div>
                 <div className="form-actions">
                   <button type="button" className="btn btn-secondary" onClick={resetProductForm}>Cancel</button>
-                  <button type="submit" className="btn btn-primary" disabled={loading}>{loading ? 'Saving...' : editingProduct ? 'Update' : 'Create'}</button>
+                  <button type="submit" className="btn btn-primary" disabled={loading}>{loading ? 'Creating...' : 'Create'}</button>
                 </div>
               </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ═══════ IMAGE PREVIEW MODAL ═══════ */}
+      <AnimatePresence>
+        {selectedImageProduct && (
+          <motion.div className="modal-overlay" onClick={closeImageModal} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <motion.div className="modal-content product-image-modal" onClick={(e) => e.stopPropagation()} initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} transition={{ type: 'spring', damping: 25 }}>
+              <div className="modal-header">
+                <h3>{selectedImageProduct.name}</h3>
+                <button className="close-btn" onClick={closeImageModal}><FaTimes /></button>
+              </div>
+              <div className="image-modal-content">
+                <div className="image-modal-main">
+                  <img src={imageModalPreview} alt={selectedImageProduct.name} className="product-image-enlarged" onClick={() => window.open(imageModalPreview, '_blank')} style={{ cursor: 'pointer' }} title="Click to open full size" />
+                  <div className="image-modal-actions">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      ref={imageFileInputRef}
+                      onChange={handleImageModalImageUpload}
+                      style={{ display: 'none' }}
+                    />
+                    <button className="btn btn-secondary btn-sm" onClick={() => imageFileInputRef.current?.click()}>
+                      <FaUpload /> Change Image
+                    </button>
+                    <button className="btn btn-secondary btn-sm" disabled>
+                      <FaPlus /> Add More Images (Coming Soon)
+                    </button>
+                  </div>
+                </div>
+                <div className="image-modal-details">
+                  <div className="form-group">
+                    <label>Description</label>
+                    <InlineEditCell
+                      value={imageModalDescEdit}
+                      onSave={(v) => {
+                        setImageModalDescEdit(v);
+                        handleImageModalDescSave(v);
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
             </motion.div>
           </motion.div>
         )}
@@ -923,14 +1061,14 @@ const Admin = () => {
           <motion.div className="modal-overlay" onClick={resetBulkImport} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <motion.div className="modal-content modal-wide" onClick={(e) => e.stopPropagation()} initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} transition={{ type: 'spring', damping: 25 }}>
               <div className="modal-header">
-                <h3><FaFileImport /> Bulk Import Products</h3>
+                <h3><FaFileImport /> Bulk Create Products</h3>
                 <button className="close-btn" onClick={resetBulkImport}><FaTimes /></button>
               </div>
 
               {/* Step indicators */}
               <div className="bulk-steps">
                 <div className={`bulk-step ${bulkStep >= 1 ? 'active' : ''}`}>
-                  <span className="step-num">1</span> Upload File
+                  <span className="step-num">1</span> Choose Images
                 </div>
                 <div className="step-line"></div>
                 <div className={`bulk-step ${bulkStep >= 2 ? 'active' : ''}`}>
@@ -944,49 +1082,68 @@ const Admin = () => {
 
               {bulkStep === 1 && (
                 <div className="bulk-upload-area">
-                  <FaFileExcel size={48} style={{ color: 'var(--accent)', marginBottom: '1rem' }} />
-                  <h4>Upload Excel or CSV File</h4>
-                  <p>Columns: name, description, price, category, color, beadType, stock, image</p>
-                  <input type="file" accept=".xlsx,.xls,.csv" onChange={handleBulkFileUpload} className="bulk-file-input" />
-                  <small>Supported formats: .xlsx, .xls, .csv</small>
+                  <FaUpload size={44} style={{ color: 'var(--accent)', marginBottom: '1rem' }} />
+                  <h4>Drop product images here</h4>
+                  <p>One image becomes one product. Stock will default to 1 and price will follow the last in-stock product in the category.</p>
+
+                  <div className="form-group bulk-category-group">
+                    <label>Category for this batch *</label>
+                    <select value={bulkCategory} onChange={(e) => setBulkCategory(e.target.value)}>
+                      <option value="">Select Category</option>
+                      {categories.map((cat) => (<option key={cat._id} value={cat.name}>{cat.name}</option>))}
+                    </select>
+                  </div>
+
+                  <div
+                    className={`bulk-drop-zone ${bulkDragActive ? 'drag-over' : ''}`}
+                    onClick={() => bulkFileInputRef.current?.click()}
+                    onDragOver={(e) => { e.preventDefault(); setBulkDragActive(true); }}
+                    onDragEnter={(e) => { e.preventDefault(); setBulkDragActive(true); }}
+                    onDragLeave={() => setBulkDragActive(false)}
+                    onDrop={handleBulkDrop}
+                    role="button"
+                    tabIndex={0}
+                  >
+                    <FaUpload size={36} style={{ color: 'var(--accent)', marginBottom: '0.75rem' }} />
+                    <strong>Drop images here or click to browse</strong>
+                    <span>PNG, JPG, JPEG, WEBP supported</span>
+                    <input
+                      ref={bulkFileInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      onChange={handleBulkInputChange}
+                      className="bulk-hidden-input"
+                    />
+                  </div>
                 </div>
               )}
 
               {bulkStep === 2 && (
                 <div className="bulk-preview">
-                  <p><strong>{bulkData.length} products</strong> found in file:</p>
-                  <div className="bulk-preview-table-container">
-                    <table className="products-table bulk-table">
-                      <thead>
-                        <tr>
-                          <th>#</th>
-                          <th>Name</th>
-                          <th>Category</th>
-                          <th>Color</th>
-                          <th>Bead Type</th>
-                          <th>Price</th>
-                          <th>Stock</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {bulkData.map((item, i) => (
-                          <tr key={i}>
-                            <td>{i + 1}</td>
-                            <td>{item.name}</td>
-                            <td>{item.category}</td>
-                            <td>{item.color || '-'}</td>
-                            <td>{item.beadType || '-'}</td>
-                            <td>₹{item.price}</td>
-                            <td>{item.stock}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <p><strong>{bulkImages.length} images</strong> ready for import.</p>
+                  <div className="form-group bulk-category-group bulk-category-preview">
+                    <label>Category for this batch *</label>
+                    <select value={bulkCategory} onChange={(e) => setBulkCategory(e.target.value)}>
+                      <option value="">Select Category</option>
+                      {categories.map((cat) => (<option key={cat._id} value={cat.name}>{cat.name}</option>))}
+                    </select>
+                  </div>
+                  <div className="bulk-image-grid">
+                    {bulkImages.map((image, index) => (
+                      <div className="bulk-image-card" key={`${image.name}-${index}`}>
+                        <img src={image.preview} alt={image.name} />
+                        <div className="bulk-image-meta">
+                          <strong>Product {index + 1}</strong>
+                          <span>{image.name}</span>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                   <div className="form-actions">
-                    <button className="btn btn-secondary" onClick={() => { setBulkStep(1); setBulkData([]); }}>Back</button>
+                    <button className="btn btn-secondary" onClick={() => { setBulkStep(1); setBulkImages([]); }}>Back</button>
                     <button className="btn btn-primary" onClick={handleBulkImport} disabled={bulkImporting}>
-                      <FaUpload /> Import {bulkData.length} Products
+                      <FaUpload /> Import {bulkImages.length} Products
                     </button>
                   </div>
                 </div>
