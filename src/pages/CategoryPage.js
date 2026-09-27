@@ -57,21 +57,26 @@ const Swatch = ({ value }) => {
   return <span className={`color-swatch ${swatch ? '' : 'unknown'}`} style={swatch ? { background: swatch } : undefined} />;
 };
 
-const FilterChips = ({ options, selected, onToggle, swatches }) => (
+// `counts` (optional) overrides each option's static count; unselected options at 0 are disabled
+const FilterChips = ({ options, selected, onToggle, swatches, counts }) => (
   <div className="cat-chips">
     {options.map((option) => {
       const active = selected.includes(option.key);
+      const count = counts ? (counts.get(option.key) || 0) : option.count;
+      const unavailable = !active && count === 0;
       return (
         <button
           key={option.key}
           type="button"
           className={`cat-chip ${active ? 'active' : ''}`}
           aria-pressed={active}
+          disabled={unavailable}
+          title={unavailable ? 'No items match this together with your other filters' : undefined}
           onClick={() => onToggle(option.key)}
         >
           {swatches && <Swatch value={option.label} />}
           {option.label}
-          <span className="cat-chip-count">{option.count}</span>
+          <span className="cat-chip-count">{count}</span>
         </button>
       );
     })}
@@ -136,11 +141,12 @@ const CategoryPage = () => {
   const activeFilterCount = selectedColors.length + selectedBeads.length
     + (priceActive ? 1 : 0) + (inStockOnly ? 1 : 0);
 
+  // Colors are exclusive: a product must have every selected color. Bead types match any.
   const visibleProducts = useMemo(() => {
     const filtered = products.filter((product) => {
       if (selectedColors.length > 0) {
         const colors = toList(product.color).map(tagKey);
-        if (!selectedColors.some(c => colors.includes(c))) return false;
+        if (!selectedColors.every(c => colors.includes(c))) return false;
       }
       if (selectedBeads.length > 0) {
         const beads = toList(product.beadType).map(tagKey);
@@ -155,6 +161,18 @@ const CategoryPage = () => {
     // selectedColors/selectedBeads are derived from searchParams
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [products, searchParams, priceLow, priceHigh, inStockOnly, sort]);
+
+  // How many results each color would leave, so chips that lead nowhere can be disabled
+  const colorCounts = useMemo(() => {
+    const counts = new Map();
+    visibleProducts.forEach((product) => {
+      toList(product.color).forEach((color) => {
+        const key = tagKey(color);
+        counts.set(key, (counts.get(key) || 0) + 1);
+      });
+    });
+    return counts;
+  }, [visibleProducts]);
 
   const updateParams = (mutate) => {
     setSearchParams((prev) => {
@@ -293,7 +311,16 @@ const CategoryPage = () => {
                 {colorOptions.length > 0 && (
                   <section className="cat-filter-group">
                     <h3>Color</h3>
-                    <FilterChips options={colorOptions} selected={selectedColors} onToggle={(key) => toggleParamValue('color', key)} swatches />
+                    <FilterChips
+                      options={colorOptions}
+                      selected={selectedColors}
+                      counts={colorCounts}
+                      onToggle={(key) => toggleParamValue('color', key)}
+                      swatches
+                    />
+                    {selectedColors.length > 1 && (
+                      <p className="cat-filter-hint">Showing pieces with all selected colors</p>
+                    )}
                   </section>
                 )}
 

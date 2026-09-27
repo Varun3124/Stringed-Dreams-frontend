@@ -50,7 +50,11 @@ const Contact = () => {
         headers: { Authorization: `Bearer ${user.token}` }
       });
       setChatId(data._id);
-      setMessages(data.messages || []);
+      const next = data.messages || [];
+      // Polls usually return the same thread; skip the re-render when nothing changed
+      setMessages(prev => (
+        prev.length === next.length && prev[prev.length - 1]?._id === next[next.length - 1]?._id ? prev : next
+      ));
     } catch (error) {
       console.error('Failed to fetch chat:', error);
     } finally {
@@ -77,10 +81,13 @@ const Contact = () => {
     };
   }, [user, fetchChat]);
 
-  // Scroll to bottom only when user sends a message
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, []);
+  // Scroll to the newest message only right after the user sends one (never on polls)
+  const scrollAfterSendRef = useRef(false);
+  useEffect(() => {
+    if (!scrollAfterSendRef.current) return;
+    scrollAfterSendRef.current = false;
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [messages]);
 
   // Pre-attach product/collection from query params
   useEffect(() => {
@@ -111,7 +118,7 @@ const Contact = () => {
     if (!messageText.trim() || !chatId) return;
     setSending(true);
     try {
-      await axios.post(`/api/contact/${chatId}/messages`, {
+      const { data } = await axios.post(`/api/contact/${chatId}/messages`, {
         text: messageText,
         product: msgAttachProduct?._id || undefined,
         playlist: msgAttachCollection?._id || undefined
@@ -120,8 +127,8 @@ const Contact = () => {
       setMessageText('');
       setMsgAttachProduct(null);
       setMsgAttachCollection(null);
-      fetchChat();
-      scrollToBottom();
+      scrollAfterSendRef.current = true;
+      setMessages(data.messages || []);
     } catch (error) {
       alert(error.response?.data?.message || 'Failed to send message');
     } finally {

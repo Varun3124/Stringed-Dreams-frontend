@@ -279,7 +279,9 @@ const Admin = () => {
   const [selectedInquiry, setSelectedInquiry] = useState(null);
   const [adminMessages, setAdminMessages] = useState([]);
   const [adminReplyText, setAdminReplyText] = useState('');
-  const adminMessagesEndRef = useRef(null);
+  const adminMessagesRef = useRef(null);
+  const stickToBottomRef = useRef(true);
+  const lastMessagesKeyRef = useRef('');
 
   // Background sync state
   const queuesRef = useRef({});
@@ -408,7 +410,13 @@ const Admin = () => {
       const { data } = await axios.get(`/api/contact/${id}`, authConfig());
       if (selectedInquiryRef.current?._id !== id) return;
       if (pendingRepliesRef.current > 0 || messagesVersionRef.current !== version) return;
-      setAdminMessages(data.messages || []);
+      const next = data.messages || [];
+      // Polls usually return the same thread; skip the re-render when nothing changed
+      setAdminMessages(prev => (
+        prev.length === next.length && prev[prev.length - 1]?._id === next[next.length - 1]?._id && !prev.some(m => m.pending)
+          ? prev
+          : next
+      ));
     } catch (error) { console.error('Failed to fetch conversation messages'); }
   };
 
@@ -432,10 +440,33 @@ const Admin = () => {
   // Storefront pages should re-read the catalog after admin edits
   useEffect(() => () => invalidateCatalog(), []);
 
-  // Scroll admin messages to bottom
+  // Keep the chat pinned to the newest message by scrolling only the message pane
+  // (scrollIntoView also scrolled the whole page every time a poll came back).
   useEffect(() => {
-    adminMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [adminMessages]);
+    const pane = adminMessagesRef.current;
+    if (!pane) return;
+    const conversationId = selectedInquiry?._id || '';
+    const last = adminMessages[adminMessages.length - 1];
+    const key = `${conversationId}:${adminMessages.length}:${last?._id || ''}`;
+    if (key === lastMessagesKeyRef.current) return;
+
+    const previousKey = lastMessagesKeyRef.current;
+    // Opening a conversation (or its first load) jumps straight to the latest message
+    const freshOpen = !previousKey.startsWith(`${conversationId}:`) || previousKey === `${conversationId}:0:`;
+    lastMessagesKeyRef.current = key;
+    if (freshOpen || last?.pending) stickToBottomRef.current = true;
+    if (!stickToBottomRef.current) return;
+
+    // Smooth scrolling doesn't run in background tabs, so jump there instead
+    const animate = !freshOpen && document.visibilityState === 'visible';
+    pane.scrollTo({ top: pane.scrollHeight, behavior: animate ? 'smooth' : 'auto' });
+  }, [adminMessages, selectedInquiry?._id]);
+
+  // Only auto-scroll for new messages while the admin is already reading the latest ones
+  const handleMessagesScroll = (e) => {
+    const pane = e.currentTarget;
+    stickToBottomRef.current = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 80;
+  };
 
   const toggleCategory = (categoryId) => {
     setExpandedCategories(prev => ({ ...prev, [categoryId]: !prev[categoryId] }));
@@ -1279,7 +1310,7 @@ const Admin = () => {
                     </div>
 
                     {/* Chat messages */}
-                    <div className="admin-chat-messages">
+                    <div className="admin-chat-messages" ref={adminMessagesRef} onScroll={handleMessagesScroll}>
                       {adminMessages.map((msg, idx) => (
                         <div key={msg._id || idx} className={`admin-chat-bubble ${msg.senderRole} ${msg.pending ? 'pending' : ''}`}>
                           {(msg.product || msg.playlist) && (
@@ -1327,7 +1358,6 @@ const Admin = () => {
                           </div>
                         </div>
                       ))}
-                      <div ref={adminMessagesEndRef} />
                     </div>
 
                     {/* Reply input */}
