@@ -1,7 +1,18 @@
-import React, { createContext, useState, useContext, useEffect } from 'react';
+import React, { createContext, useState, useContext } from 'react';
 import axios from '../api/axios';
 
 const AuthContext = createContext();
+
+// Read synchronously so the very first render already knows who is logged in
+// (otherwise guarded pages like /admin redirect before the session is restored).
+const readStoredUser = () => {
+  try {
+    const stored = localStorage.getItem('userInfo');
+    return stored ? JSON.parse(stored) : null;
+  } catch {
+    return null;
+  }
+};
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
@@ -12,16 +23,8 @@ export const useAuth = () => {
 };
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const userInfo = localStorage.getItem('userInfo');
-    if (userInfo) {
-      setUser(JSON.parse(userInfo));
-    }
-    setLoading(false);
-  }, []);
+  const [user, setUser] = useState(readStoredUser);
+  const loading = false;
 
   const login = async (email, password) => {
     try {

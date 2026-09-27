@@ -1,12 +1,13 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import axios from '../api/axios';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   FaPlus, FaEdit, FaTrash, FaTimes, FaChevronDown, FaChevronRight,
   FaGripVertical, FaCopy, FaFileImport, FaInbox, FaBoxes,
-  FaUpload, FaEye, FaReply, FaClock, FaCheckCircle
+  FaUpload, FaEye, FaReply, FaClock, FaCheckCircle, FaBox, FaListUl,
+  FaExternalLinkAlt, FaExclamationCircle
 } from 'react-icons/fa';
 import {
   DndContext, closestCenter, KeyboardSensor, PointerSensor, TouchSensor, useSensor, useSensors,
@@ -15,38 +16,76 @@ import {
   arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import TagInput, { TagChips } from '../components/TagInput';
+import { toList } from '../utils/tags';
+import { imageUrl } from '../api/axios';
+import { invalidateCatalog } from '../data/catalog';
+
+/* ─── Helpers for optimistic updates ─── */
+const TEMP_PREFIX = 'temp-';
+const isTempId = (id) => String(id).startsWith(TEMP_PREFIX);
+const makeTempId = () => `${TEMP_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const UNCATEGORIZED_KEY = '__uncategorized__';
+const PLACEHOLDER_IMAGE = 'https://via.placeholder.com/300';
+const byDisplayOrder = (a, b) => (a.displayOrder || 0) - (b.displayOrder || 0);
+const byName = (a, b) => a.name.localeCompare(b.name);
+
+const EMPTY_PRODUCT_FORM = {
+  name: '', description: '', price: '', category: '', color: [], beadType: [],
+  image: '', stock: '', featuredInCarousel: false, carouselOrder: 0, displayOrder: 0
+};
+
+/* Double-click (desktop) or long-press (mobile) to start editing */
+const useEditTrigger = (onStart, disabled) => {
+  const [isLongPressing, setIsLongPressing] = useState(false);
+  const touchTimerRef = useRef(null);
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+
+  const onTouchStart = () => {
+    if (!isMobile || disabled) return;
+    setIsLongPressing(true);
+    touchTimerRef.current = setTimeout(() => {
+      setIsLongPressing(false);
+      onStart();
+    }, 500);
+  };
+
+  const onTouchEnd = () => {
+    if (!isMobile) return;
+    setIsLongPressing(false);
+    if (touchTimerRef.current) clearTimeout(touchTimerRef.current);
+  };
+
+  return {
+    isLongPressing,
+    handlers: {
+      onDoubleClick: () => !isMobile && !disabled && onStart(),
+      onTouchStart,
+      onTouchEnd,
+      title: disabled ? 'Saving…' : isMobile ? 'Long-press to edit' : 'Double-click to edit'
+    }
+  };
+};
+
 /* ─── Inline Editable Cell ─── */
-const InlineEditCell = ({ value, onSave, type = 'text' }) => {
+const InlineEditCell = ({ value, onSave, type = 'text', disabled = false }) => {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(value);
-  const [isLongPressing, setIsLongPressing] = useState(false);
   const inputRef = useRef(null);
-  const touchTimerRef = useRef(null);
-  const isMobileRef = useRef(typeof window !== 'undefined' && window.innerWidth < 768);
+  const { isLongPressing, handlers } = useEditTrigger(() => setEditing(true), disabled);
 
   useEffect(() => {
     if (editing && inputRef.current) inputRef.current.focus();
   }, [editing]);
 
+  // Keep in sync with external changes (e.g. a rolled-back save)
+  useEffect(() => {
+    if (!editing) setEditValue(value);
+  }, [value, editing]);
+
   const save = () => {
     setEditing(false);
-    setIsLongPressing(false);
-    if (editValue !== value) onSave(editValue);
-  };
-
-  const handleTouchStart = () => {
-    if (!isMobileRef.current) return;
-    setIsLongPressing(true);
-    touchTimerRef.current = setTimeout(() => {
-      setEditing(true);
-      setIsLongPressing(false);
-    }, 500);
-  };
-
-  const handleTouchEnd = () => {
-    if (!isMobileRef.current) return;
-    setIsLongPressing(false);
-    if (touchTimerRef.current) clearTimeout(touchTimerRef.current);
+    if (String(editValue ?? '') !== String(value ?? '')) onSave(editValue);
   };
 
   if (editing) {
@@ -55,7 +94,7 @@ const InlineEditCell = ({ value, onSave, type = 'text' }) => {
         ref={inputRef}
         className="inline-edit-input"
         type={type}
-        value={editValue}
+        value={editValue ?? ''}
         onChange={(e) => setEditValue(e.target.value)}
         onBlur={save}
         onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') { setEditValue(value); setEditing(false); } }}
@@ -64,21 +103,55 @@ const InlineEditCell = ({ value, onSave, type = 'text' }) => {
   }
 
   return (
-    <span
-      className={`inline-edit-cell ${isLongPressing ? 'mobile-long-press-active' : ''}`}
-      onDoubleClick={() => !isMobileRef.current && setEditing(true)}
-      onTouchStart={handleTouchStart}
-      onTouchEnd={handleTouchEnd}
-      title={isMobileRef.current ? 'Long-press to edit' : 'Double-click to edit'}
-    >
-      {value || '-'}
+    <span className={`inline-edit-cell ${isLongPressing ? 'mobile-long-press-active' : ''}`} {...handlers}>
+      {value || value === 0 ? value : '-'}
+    </span>
+  );
+};
+
+/* ─── Inline Editable Multi-Value Cell (colors, bead types) ─── */
+const InlineTagCell = ({ value, onSave, suggestions, swatches = false, label, disabled = false }) => {
+  const values = toList(value);
+  const [editing, setEditing] = useState(false);
+  const [editValues, setEditValues] = useState(values);
+  const { isLongPressing, handlers } = useEditTrigger(() => {
+    setEditValues(toList(value));
+    setEditing(true);
+  }, disabled);
+
+  const commit = (finalValues) => {
+    setEditing(false);
+    const next = toList(finalValues);
+    if (next.join('\u0000') !== values.join('\u0000')) onSave(next);
+  };
+
+  if (editing) {
+    return (
+      <TagInput
+        className="inline"
+        value={editValues}
+        onChange={setEditValues}
+        suggestions={suggestions}
+        swatches={swatches}
+        label={label}
+        autoFocus
+        onCommit={commit}
+        onCancel={() => setEditing(false)}
+      />
+    );
+  }
+
+  return (
+    <span className={`inline-edit-cell ${isLongPressing ? 'mobile-long-press-active' : ''}`} {...handlers}>
+      {values.length > 0 ? <TagChips values={values} swatches={swatches} /> : '-'}
     </span>
   );
 };
 
 /* ─── Sortable Product Row ─── */
-const SortableProductRow = ({ product, user, fetchProducts, handleDeleteProduct, handleDuplicateProduct, handleMoveToLast, onImageClick, categories }) => {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: product._id });
+const SortableProductRow = ({ product, onInlineSave, onDelete, onDuplicate, onCarouselChange, onImageClick, colorSuggestions, beadSuggestions }) => {
+  const isTemp = isTempId(product._id);
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: product._id, disabled: isTemp });
   const touchTimerRef = useRef(null);
   const [isDragPressed, setIsDragPressed] = useState(false);
 
@@ -88,24 +161,6 @@ const SortableProductRow = ({ product, user, fetchProducts, handleDeleteProduct,
     opacity: isDragging ? 0.85 : 1,
     position: isDragging ? 'relative' : 'static',
     zIndex: isDragging ? 1000 : 'auto',
-  };
-
-  const handleInlineSave = async (field, val) => {
-    try {
-      const updateData = { [field]: (field === 'price' || field === 'stock') ? parseFloat(val) : val };
-      await axios.put(
-        `/api/admin/products/${product._id}`,
-        updateData,
-        { headers: { Authorization: `Bearer ${user.token}` } }
-      );
-      if (field === 'stock' && parseFloat(val) === 0) {
-        await handleMoveToLast(product);
-      } else {
-        fetchProducts();
-      }
-    } catch (err) {
-      alert(err.response?.data?.message || 'Failed to update');
-    }
   };
 
   const handleDragGripTouchStart = () => {
@@ -121,36 +176,29 @@ const SortableProductRow = ({ product, user, fetchProducts, handleDeleteProduct,
   };
 
   return (
-    <tr ref={setNodeRef} style={style} className={isDragging ? 'row-dragging' : ''}>
-      <td {...attributes} {...listeners} onTouchStart={handleDragGripTouchStart} onTouchEnd={handleDragGripTouchEnd} style={{ cursor: 'grab', textAlign: 'center' }} className={isDragPressed ? 'drag-pressed' : ''}>
+    <tr ref={setNodeRef} style={style} className={`${isDragging ? 'row-dragging' : ''} ${isTemp ? 'row-saving' : ''}`}>
+      <td {...attributes} {...listeners} onTouchStart={handleDragGripTouchStart} onTouchEnd={handleDragGripTouchEnd} style={{ cursor: isTemp ? 'default' : 'grab', textAlign: 'center' }} className={isDragPressed ? 'drag-pressed' : ''}>
         <FaGripVertical style={{ color: 'var(--text-muted)' }} />
       </td>
       <td>
-        <img src={product.image} alt={product.name} className="product-thumb" onClick={() => onImageClick(product)} style={{ cursor: 'pointer' }} title="Click to view/edit product image" />
+        <div className="product-thumb-wrap">
+          <img src={imageUrl(product.image)} alt={product.name} className="product-thumb" loading="lazy" decoding="async" onClick={() => !isTemp && onImageClick(product)} style={{ cursor: isTemp ? 'default' : 'pointer' }} title="Click to view/edit product image" />
+          {isTemp && <span className="saving-pill">Saving…</span>}
+        </div>
       </td>
-      <td><InlineEditCell value={product.name} onSave={(v) => handleInlineSave('name', v)} /></td>
-      <td><InlineEditCell value={product.color || ''} onSave={(v) => handleInlineSave('color', v)} /></td>
-      <td><InlineEditCell value={product.beadType || ''} onSave={(v) => handleInlineSave('beadType', v)} /></td>
+      <td><InlineEditCell value={product.name} onSave={(v) => onInlineSave(product, 'name', v)} disabled={isTemp} /></td>
+      <td><InlineTagCell value={product.color} onSave={(v) => onInlineSave(product, 'color', v)} suggestions={colorSuggestions} swatches label="Add color" disabled={isTemp} /></td>
+      <td><InlineTagCell value={product.beadType} onSave={(v) => onInlineSave(product, 'beadType', v)} suggestions={beadSuggestions} label="Add bead type" disabled={isTemp} /></td>
       <td className="price-cell">
-        <InlineEditCell value={product.price} onSave={(v) => handleInlineSave('price', v)} type="number" />
+        <InlineEditCell value={product.price} onSave={(v) => onInlineSave(product, 'price', v)} type="number" disabled={isTemp} />
       </td>
-      <td><InlineEditCell value={product.stock} onSave={(v) => handleInlineSave('stock', v)} type="number" /></td>
+      <td><InlineEditCell value={product.stock} onSave={(v) => onInlineSave(product, 'stock', v)} type="number" disabled={isTemp} /></td>
       <td>
         <input
           type="checkbox"
           checked={product.featuredInCarousel || false}
-          onChange={async (e) => {
-            try {
-              await axios.put(
-                `/api/admin/products/${product._id}/carousel`,
-                { featuredInCarousel: e.target.checked, carouselOrder: product.carouselOrder || 0 },
-                { headers: { Authorization: `Bearer ${user.token}` } }
-              );
-              fetchProducts();
-            } catch (err) {
-              alert(err.response?.data?.message || 'Failed to update carousel status');
-            }
-          }}
+          disabled={isTemp}
+          onChange={(e) => onCarouselChange(product, { featuredInCarousel: e.target.checked }, 0)}
           style={{ cursor: 'pointer' }}
         />
       </td>
@@ -158,34 +206,38 @@ const SortableProductRow = ({ product, user, fetchProducts, handleDeleteProduct,
         <input
           type="number"
           value={product.carouselOrder || 0}
-          onChange={async (e) => {
-            try {
-              await axios.put(
-                `/api/admin/products/${product._id}/carousel`,
-                { featuredInCarousel: product.featuredInCarousel || false, carouselOrder: parseInt(e.target.value) || 0 },
-                { headers: { Authorization: `Bearer ${user.token}` } }
-              );
-              fetchProducts();
-            } catch (err) {
-              alert(err.response?.data?.message || 'Failed to update carousel order');
-            }
-          }}
+          disabled={isTemp}
+          onChange={(e) => onCarouselChange(product, { carouselOrder: parseInt(e.target.value, 10) || 0 }, 500)}
           style={{ width: '60px' }}
           min="0"
         />
       </td>
       <td>
         <div className="action-buttons">
-          <button className="btn-icon btn-duplicate" onClick={() => handleDuplicateProduct(product._id)} title="Duplicate product">
+          <button className="btn-icon btn-duplicate" onClick={() => onDuplicate(product)} title="Duplicate product" disabled={isTemp}>
             <FaCopy />
           </button>
-          <button className="btn-icon btn-delete" onClick={() => handleDeleteProduct(product._id)} title="Delete product">
+          <button className="btn-icon btn-delete" onClick={() => onDelete(product)} title="Delete product" disabled={isTemp}>
             <FaTrash />
           </button>
         </div>
       </td>
     </tr>
   );
+};
+
+/* ─── Save status shown in the header ─── */
+const SyncIndicator = ({ pendingCount, failed, showSaved }) => {
+  if (pendingCount > 0) {
+    return <span className="sync-indicator saving"><span className="sync-dot" /> Saving…</span>;
+  }
+  if (failed) {
+    return <span className="sync-indicator failed"><FaExclamationCircle /> Some changes failed</span>;
+  }
+  if (showSaved) {
+    return <span className="sync-indicator saved"><FaCheckCircle /> All changes saved</span>;
+  }
+  return null;
 };
 
 /* ─── Main Admin Component ─── */
@@ -197,22 +249,15 @@ const Admin = () => {
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [expandedCategories, setExpandedCategories] = useState({});
-  const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
 
   // Product form state (for creating new products only)
   const [showProductForm, setShowProductForm] = useState(false);
-  const [, setImageFile] = useState(null);
   const [imagePreview, setImagePreview] = useState('');
-  const [productForm, setProductForm] = useState({
-    name: '', description: '', price: '', category: '', color: '', beadType: '',
-    image: '', stock: '', featuredInCarousel: false, carouselOrder: 0, displayOrder: 0
-  });
+  const [productForm, setProductForm] = useState(EMPTY_PRODUCT_FORM);
 
-  // Image preview modal state
-  const [selectedImageProduct, setSelectedImageProduct] = useState(null);
-  const [imageModalPreview, setImageModalPreview] = useState('');
-  const [imageModalDescEdit, setImageModalDescEdit] = useState('');
+  // Image preview modal state (derived from products so it reflects optimistic updates)
+  const [selectedImageProductId, setSelectedImageProductId] = useState(null);
   const imageFileInputRef = useRef(null);
 
   // Category form state
@@ -222,11 +267,10 @@ const Admin = () => {
 
   // Bulk import state
   const [showBulkImport, setShowBulkImport] = useState(false);
-  const [bulkStep, setBulkStep] = useState(1); // 1=upload, 2=preview, 3=importing
+  const [bulkStep, setBulkStep] = useState(1); // 1=upload, 2=preview
   const [bulkCategory, setBulkCategory] = useState('');
   const [bulkImages, setBulkImages] = useState([]);
   const [bulkDragActive, setBulkDragActive] = useState(false);
-  const [bulkImporting, setBulkImporting] = useState(false);
   const bulkFileInputRef = useRef(null);
 
   // Inquiries state
@@ -235,8 +279,83 @@ const Admin = () => {
   const [selectedInquiry, setSelectedInquiry] = useState(null);
   const [adminMessages, setAdminMessages] = useState([]);
   const [adminReplyText, setAdminReplyText] = useState('');
-  const [adminReplySending, setAdminReplySending] = useState(false);
-  const adminMessagesEndRef = React.useRef(null);
+  const adminMessagesEndRef = useRef(null);
+
+  // Background sync state
+  const queuesRef = useRef({});
+  const pendingRef = useRef(0);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [syncFailed, setSyncFailed] = useState(false);
+  const [showSaved, setShowSaved] = useState(false);
+  const prevPendingRef = useRef(0);
+  const carouselTimersRef = useRef({});
+  const inquiryTasksRef = useRef(0);
+  const inquiryVersionRef = useRef(0);
+  const pendingRepliesRef = useRef(0);
+  const messagesVersionRef = useRef(0);
+
+  const productsRef = useRef(products);
+  productsRef.current = products;
+  const selectedInquiryRef = useRef(selectedInquiry);
+  selectedInquiryRef.current = selectedInquiry;
+
+  const authConfig = () => ({ headers: { Authorization: `Bearer ${user.token}` } });
+
+  const showMsg = (type, text) => {
+    setMessage({ type, text });
+    setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+  };
+
+  /* ─── Background task queue ─── */
+  const changePending = useCallback((delta) => {
+    if (delta > 0 && pendingRef.current === 0) setSyncFailed(false);
+    pendingRef.current += delta;
+    setPendingCount(pendingRef.current);
+  }, []);
+
+  // Runs `task` after any earlier task with the same key, without blocking the UI.
+  // `onError` should roll back the optimistic change.
+  const enqueue = useCallback((key, task, onError) => {
+    changePending(1);
+    const previous = queuesRef.current[key] || Promise.resolve();
+    const run = previous
+      .then(task)
+      .catch((error) => {
+        console.error(`Background save failed (${key}):`, error);
+        setSyncFailed(true);
+        if (onError) onError(error);
+      })
+      .finally(() => {
+        changePending(-1);
+        if (queuesRef.current[key] === run) delete queuesRef.current[key];
+      });
+    queuesRef.current[key] = run;
+    return run;
+  }, [changePending]);
+
+  const enqueueInquiry = (id, task, onError) => {
+    inquiryTasksRef.current += 1;
+    inquiryVersionRef.current += 1;
+    return enqueue(`inquiry-${id}`, task, onError).finally(() => { inquiryTasksRef.current -= 1; });
+  };
+
+  // "All changes saved" flash once the queue drains
+  useEffect(() => {
+    const hadPending = prevPendingRef.current > 0;
+    prevPendingRef.current = pendingCount;
+    if (!hadPending || pendingCount > 0 || syncFailed) return;
+    setShowSaved(true);
+    const timer = setTimeout(() => setShowSaved(false), 2500);
+    return () => clearTimeout(timer);
+  }, [pendingCount, syncFailed]);
+
+  // Warn before leaving while saves are still in flight
+  useEffect(() => {
+    if (pendingCount === 0) return;
+    const handler = (e) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [pendingCount]);
 
   useEffect(() => {
     if (!user || user.role !== 'admin') { navigate('/'); return; }
@@ -254,7 +373,7 @@ const Admin = () => {
   const fetchProducts = async () => {
     try {
       if (!user?.token) { showMsg('error', 'No auth token. Please login again.'); return; }
-      const { data } = await axios.get('/api/admin/products', { headers: { Authorization: `Bearer ${user.token}` } });
+      const { data } = await axios.get('/api/admin/products', authConfig());
       setProducts(data);
     } catch (error) { showMsg('error', error.response?.data?.message || 'Failed to fetch products'); }
   };
@@ -262,7 +381,7 @@ const Admin = () => {
   const fetchCategories = async () => {
     try {
       if (!user?.token) { showMsg('error', 'No auth token.'); return; }
-      const { data } = await axios.get('/api/admin/categories', { headers: { Authorization: `Bearer ${user.token}` } });
+      const { data } = await axios.get('/api/admin/categories', authConfig());
       setCategories(data);
       const expanded = {};
       data.forEach(cat => { expanded[cat._id] = false; });
@@ -270,55 +389,92 @@ const Admin = () => {
     } catch (error) { showMsg('error', error.response?.data?.message || 'Failed to fetch categories'); }
   };
 
+  // Poll results are ignored while inquiry changes are in flight, so they can't undo them
   const fetchInquiries = async () => {
+    const version = inquiryVersionRef.current;
     setInquiriesLoading(true);
     try {
-      const { data } = await axios.get('/api/contact', { headers: { Authorization: `Bearer ${user.token}` } });
+      const { data } = await axios.get('/api/contact', authConfig());
+      if (inquiryTasksRef.current > 0 || inquiryVersionRef.current !== version) return;
       setInquiries(data);
+      setSelectedInquiry(prev => (prev && data.find(i => i._id === prev._id)) || prev);
     } catch (error) { showMsg('error', 'Failed to fetch inquiries'); }
     finally { setInquiriesLoading(false); }
   };
 
   const fetchConversationMessages = async (id) => {
+    const version = messagesVersionRef.current;
     try {
-      const { data } = await axios.get(`/api/contact/${id}`, { headers: { Authorization: `Bearer ${user.token}` } });
+      const { data } = await axios.get(`/api/contact/${id}`, authConfig());
+      if (selectedInquiryRef.current?._id !== id) return;
+      if (pendingRepliesRef.current > 0 || messagesVersionRef.current !== version) return;
       setAdminMessages(data.messages || []);
     } catch (error) { console.error('Failed to fetch conversation messages'); }
   };
 
-  // Poll inquiries and active conversation
+  // Poll inquiries and active conversation while the tab is visible
   useEffect(() => {
     if (activeTab !== 'inquiries') return;
-    const interval = setInterval(() => {
+    const poll = () => {
+      if (document.visibilityState !== 'visible') return;
       fetchInquiries();
       if (selectedInquiry) fetchConversationMessages(selectedInquiry._id);
-    }, 5000);
-    return () => clearInterval(interval);
+    };
+    const interval = setInterval(poll, 5000);
+    document.addEventListener('visibilitychange', poll);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', poll);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, selectedInquiry]);
+  }, [activeTab, selectedInquiry?._id]);
+
+  // Storefront pages should re-read the catalog after admin edits
+  useEffect(() => () => invalidateCatalog(), []);
 
   // Scroll admin messages to bottom
   useEffect(() => {
     adminMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [adminMessages]);
 
-  const showMsg = (type, text) => {
-    setMessage({ type, text });
-    setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-  };
-
   const toggleCategory = (categoryId) => {
     setExpandedCategories(prev => ({ ...prev, [categoryId]: !prev[categoryId] }));
   };
 
-  const getProductsByCategory = (categoryName) => {
-    return products.filter(p => p.category === categoryName).sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
+  const expandCategoryByName = (name) => {
+    const category = categories.find(c => c.name === name);
+    const key = category ? category._id : UNCATEGORIZED_KEY;
+    setExpandedCategories(prev => ({ ...prev, [key]: true }));
   };
+
+  const categoryNames = useMemo(() => new Set(categories.map(c => c.name)), [categories]);
+
+  const getProductsByCategory = (categoryName) => {
+    return products.filter(p => p.category === categoryName).sort(byDisplayOrder);
+  };
+
+  // Products whose category is empty or no longer exists
+  const uncategorizedProducts = useMemo(
+    () => products.filter(p => !categoryNames.has(p.category)).sort(byDisplayOrder),
+    [products, categoryNames]
+  );
+
+  const getGroupFor = (product) => (
+    categoryNames.has(product.category) ? getProductsByCategory(product.category) : uncategorizedProducts
+  );
+
+  const colorSuggestions = useMemo(
+    () => toList(products.flatMap(p => toList(p.color))),
+    [products]
+  );
+  const beadSuggestions = useMemo(
+    () => toList(products.flatMap(p => toList(p.beadType))),
+    [products]
+  );
 
   const handleImageChange = (e) => {
     const file = e.target.files[0];
     if (file) {
-      setImageFile(file);
       const reader = new FileReader();
       reader.onloadend = () => { setImagePreview(reader.result); };
       reader.readAsDataURL(file);
@@ -339,96 +495,274 @@ const Admin = () => {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 
-  const handleMoveToLast = async (product) => {
-    const categoryProducts = getProductsByCategory(product.category);
-    const reordered = categoryProducts.filter(p => p._id !== product._id);
-    reordered.push(product);
-    const reorderData = reordered.map((item, index) => ({ id: item._id, displayOrder: index }));
-    try {
-      await axios.put('/api/admin/products/reorder', { products: reorderData }, { headers: { Authorization: `Bearer ${user.token}` } });
-      fetchProducts();
-    } catch (error) { console.error('Failed to move product to last'); fetchProducts(); }
+  /* ─── Optimistic product operations ─── */
+  const patchProductLocal = (id, patch) => {
+    setProducts(prev => prev.map(p => (p._id === id ? { ...p, ...patch } : p)));
   };
 
-  const handleDragEnd = async (event, categoryName) => {
+  const removeProductLocal = (id) => {
+    setProducts(prev => prev.filter(p => p._id !== id));
+  };
+
+  const updateProduct = (product, patch, errorMessage = 'Failed to update product') => {
+    const previous = Object.fromEntries(Object.keys(patch).map(k => [k, product[k]]));
+    patchProductLocal(product._id, patch);
+    enqueue(
+      product._id,
+      () => axios.put(`/api/admin/products/${product._id}`, patch, authConfig()),
+      (error) => {
+        // Only roll back fields that still hold this change (a later edit wins)
+        setProducts(prev => prev.map(p => {
+          if (p._id !== product._id) return p;
+          const reverted = { ...p };
+          Object.keys(patch).forEach(k => { if (p[k] === patch[k]) reverted[k] = previous[k]; });
+          return reverted;
+        }));
+        showMsg('error', error.response?.data?.message || errorMessage);
+      }
+    );
+  };
+
+  const applyOrder = (orderedProducts) => {
+    const orderMap = new Map(orderedProducts.map((item, index) => [item._id, index]));
+    const previous = new Map(orderedProducts.map(p => [p._id, p.displayOrder]));
+    setProducts(prev => prev.map(p => (orderMap.has(p._id) ? { ...p, displayOrder: orderMap.get(p._id) } : p)));
+
+    const payload = orderedProducts
+      .filter(p => !isTempId(p._id))
+      .map(p => ({ id: p._id, displayOrder: orderMap.get(p._id) }));
+    if (payload.length === 0) return;
+
+    enqueue(
+      'reorder',
+      () => axios.put('/api/admin/products/reorder', { products: payload }, authConfig()),
+      () => {
+        setProducts(prev => prev.map(p => (
+          orderMap.has(p._id) && p.displayOrder === orderMap.get(p._id)
+            ? { ...p, displayOrder: previous.get(p._id) }
+            : p
+        )));
+        showMsg('error', 'Failed to save the new order');
+      }
+    );
+  };
+
+  const handleMoveToLast = (product) => {
+    const reordered = getGroupFor(product).filter(p => p._id !== product._id);
+    reordered.push(product);
+    applyOrder(reordered);
+  };
+
+  const handleDragEnd = (event, groupProducts) => {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
-    const categoryProducts = getProductsByCategory(categoryName);
-    const oldIndex = categoryProducts.findIndex(p => p._id === active.id);
-    const newIndex = categoryProducts.findIndex(p => p._id === over.id);
-    const reorderedProducts = arrayMove(categoryProducts, oldIndex, newIndex);
-    const updatedProducts = reorderedProducts.map((item, index) => ({ id: item._id, displayOrder: index }));
-    const newProducts = products.map(p => {
-      const updated = updatedProducts.find(up => up.id === p._id);
-      return updated ? { ...p, displayOrder: updated.displayOrder } : p;
-    });
-    setProducts(newProducts);
-    try {
-      await axios.put('/api/admin/products/reorder', { products: updatedProducts }, { headers: { Authorization: `Bearer ${user.token}` } });
-      showMsg('success', 'Products reordered');
-    } catch (error) { showMsg('error', 'Failed to reorder'); fetchProducts(); }
+    const oldIndex = groupProducts.findIndex(p => p._id === active.id);
+    const newIndex = groupProducts.findIndex(p => p._id === over.id);
+    if (oldIndex < 0 || newIndex < 0) return;
+    applyOrder(arrayMove(groupProducts, oldIndex, newIndex));
   };
 
-  // Product CRUD
-  const handleDeleteProduct = async (id) => {
+  const handleInlineSave = (product, field, rawValue) => {
+    let value = rawValue;
+    if (field === 'price' || field === 'stock') {
+      value = parseFloat(rawValue);
+      if (!Number.isFinite(value) || value < 0) {
+        showMsg('error', `Please enter a valid ${field}`);
+        return;
+      }
+    } else if (field === 'color' || field === 'beadType') {
+      value = toList(rawValue);
+    } else {
+      value = String(rawValue ?? '').trim();
+    }
+
+    updateProduct(product, { [field]: value });
+    if (field === 'stock' && value === 0) handleMoveToLast(product);
+  };
+
+  // Featured toggles save immediately; order edits are debounced while typing
+  const handleCarouselChange = (product, patch, delay) => {
+    const id = product._id;
+    const existing = carouselTimersRef.current[id];
+    const previous = existing
+      ? existing.previous
+      : { featuredInCarousel: product.featuredInCarousel || false, carouselOrder: product.carouselOrder || 0 };
+
+    if (existing) clearTimeout(existing.timer);
+    else changePending(1);
+
+    patchProductLocal(id, patch);
+
+    const timer = setTimeout(() => {
+      delete carouselTimersRef.current[id];
+      changePending(-1);
+      const latest = productsRef.current.find(p => p._id === id);
+      if (!latest) return;
+      const body = { featuredInCarousel: latest.featuredInCarousel || false, carouselOrder: latest.carouselOrder || 0 };
+      enqueue(
+        id,
+        () => axios.put(`/api/admin/products/${id}/carousel`, body, authConfig()),
+        (error) => {
+          setProducts(prev => prev.map(p => (
+            p._id === id && (p.featuredInCarousel || false) === body.featuredInCarousel && (p.carouselOrder || 0) === body.carouselOrder
+              ? { ...p, ...previous }
+              : p
+          )));
+          showMsg('error', error.response?.data?.message || 'Failed to update carousel settings');
+        }
+      );
+    }, delay);
+
+    carouselTimersRef.current[id] = { timer, previous };
+  };
+
+  // Temporary rows appear instantly; the server copy replaces them when it arrives
+  const createProductInBackground = (tempProduct, request, errorMessage) => {
+    setProducts(prev => [tempProduct, ...prev]);
+    enqueue(
+      tempProduct._id,
+      async () => {
+        const { data } = await request();
+        setProducts(prev => prev.map(p => (p._id === tempProduct._id ? data : p)));
+      },
+      (error) => {
+        removeProductLocal(tempProduct._id);
+        showMsg('error', error.response?.data?.message || errorMessage);
+      }
+    );
+  };
+
+  const handleDeleteProduct = (product) => {
     if (!window.confirm('Delete this product?')) return;
-    try {
-      await axios.delete(`/api/admin/products/${id}`, { headers: { Authorization: `Bearer ${user.token}` } });
-      showMsg('success', 'Product deleted');
-      fetchProducts();
-    } catch (error) { showMsg('error', error.response?.data?.message || 'Failed to delete'); }
+    const index = products.findIndex(p => p._id === product._id);
+    if (selectedImageProductId === product._id) setSelectedImageProductId(null);
+    removeProductLocal(product._id);
+    enqueue(
+      product._id,
+      () => axios.delete(`/api/admin/products/${product._id}`, authConfig()),
+      (error) => {
+        setProducts(prev => {
+          const next = [...prev];
+          next.splice(Math.min(Math.max(index, 0), next.length), 0, product);
+          return next;
+        });
+        showMsg('error', error.response?.data?.message || 'Failed to delete');
+      }
+    );
   };
 
-  const handleDuplicateProduct = async (id) => {
-    try {
-      await axios.post(`/api/admin/products/${id}/duplicate`, {}, { headers: { Authorization: `Bearer ${user.token}` } });
-      showMsg('success', 'Product duplicated!');
-      fetchProducts();
-    } catch (error) { showMsg('error', error.response?.data?.message || 'Failed to duplicate'); }
+  const handleDuplicateProduct = (product) => {
+    const tempProduct = {
+      ...product,
+      _id: makeTempId(),
+      name: `${product.name} (Copy)`,
+      color: toList(product.color),
+      beadType: toList(product.beadType),
+      featuredInCarousel: false,
+      carouselOrder: 0,
+      displayOrder: 0,
+      likesCount: 0,
+      rating: 0,
+      numReviews: 0,
+      reviews: []
+    };
+    createProductInBackground(
+      tempProduct,
+      () => axios.post(`/api/admin/products/${product._id}/duplicate`, {}, authConfig()),
+      'Failed to duplicate'
+    );
   };
 
   /* ─── Product Creation Form ─── */
-  const handleProductSubmit = async (e) => {
+  const handleProductSubmit = (e) => {
     e.preventDefault();
-    setLoading(true);
-    try {
-      if (!user?.token) { showMsg('error', 'No auth token'); return; }
-      const productData = { ...productForm, image: imagePreview || productForm.image };
-      await axios.post('/api/admin/products', productData, { headers: { Authorization: `Bearer ${user.token}` } });
-      showMsg('success', 'Product created');
-      resetProductForm();
-      fetchProducts();
-    } catch (error) { showMsg('error', error.response?.data?.message || 'Operation failed'); }
-    finally { setLoading(false); }
+    if (!user?.token) { showMsg('error', 'No auth token'); return; }
+
+    const payload = {
+      ...productForm,
+      name: productForm.name.trim(),
+      category: productForm.category.trim(),
+      beadType: toList(productForm.beadType),
+      color: toList(productForm.color),
+      image: imagePreview || productForm.image || undefined
+    };
+
+    const tempProduct = {
+      ...payload,
+      _id: makeTempId(),
+      price: Number(payload.price) || 0,
+      stock: Number(payload.stock) || 0,
+      image: payload.image || PLACEHOLDER_IMAGE,
+      displayOrder: 0,
+      likesCount: 0,
+      createdAt: new Date().toISOString()
+    };
+
+    createProductInBackground(
+      tempProduct,
+      () => axios.post('/api/admin/products', payload, authConfig()),
+      'Failed to create product'
+    );
+    expandCategoryByName(payload.category);
+    resetProductForm();
   };
 
   const resetProductForm = () => {
-    setProductForm({
-      name: '', description: '', price: '', category: '', color: '', beadType: '',
-      image: '', stock: '', featuredInCarousel: false, carouselOrder: 0, displayOrder: 0
-    });
-    setImageFile(null);
+    setProductForm(EMPTY_PRODUCT_FORM);
     setImagePreview('');
     setShowProductForm(false);
   };
 
-  // Category CRUD
-  const handleCategorySubmit = async (e) => {
+  /* ─── Category CRUD ─── */
+  const handleCategorySubmit = (e) => {
     e.preventDefault();
-    setLoading(true);
-    try {
-      if (editingCategory) {
-        await axios.put(`/api/admin/categories/${editingCategory._id}`, categoryForm, { headers: { Authorization: `Bearer ${user.token}` } });
-        showMsg('success', 'Category updated');
-      } else {
-        await axios.post('/api/admin/categories', categoryForm, { headers: { Authorization: `Bearer ${user.token}` } });
-        showMsg('success', 'Category created');
+    const name = categoryForm.name.trim();
+    const description = categoryForm.description;
+    if (!name) { showMsg('error', 'Category name is required'); return; }
+    if (categories.some(c => c.name === name && c._id !== editingCategory?._id)) {
+      showMsg('error', 'Category already exists');
+      return;
+    }
+
+    if (editingCategory) {
+      const original = editingCategory;
+      const renamed = name !== original.name;
+      setCategories(prev => prev.map(c => (c._id === original._id ? { ...c, name, description } : c)).sort(byName));
+      if (renamed) {
+        setProducts(prev => prev.map(p => (p.category === original.name ? { ...p, category: name } : p)));
       }
-      resetCategoryForm();
-      fetchCategories();
-      fetchProducts();
-    } catch (error) { showMsg('error', error.response?.data?.message || 'Operation failed'); }
-    finally { setLoading(false); }
+      enqueue(
+        original._id,
+        () => axios.put(`/api/admin/categories/${original._id}`, { name, description }, authConfig()),
+        (error) => {
+          setCategories(prev => prev.map(c => (c._id === original._id ? original : c)).sort(byName));
+          if (renamed) {
+            setProducts(prev => prev.map(p => (p.category === name ? { ...p, category: original.name } : p)));
+          }
+          showMsg('error', error.response?.data?.message || 'Failed to update category');
+        }
+      );
+    } else {
+      const tempId = makeTempId();
+      setCategories(prev => [...prev, { _id: tempId, name, description }].sort(byName));
+      setExpandedCategories(prev => ({ ...prev, [tempId]: false }));
+      enqueue(
+        tempId,
+        async () => {
+          const { data } = await axios.post('/api/admin/categories', { name, description }, authConfig());
+          setCategories(prev => prev.map(c => (c._id === tempId ? data : c)));
+          setExpandedCategories(prev => {
+            const { [tempId]: wasExpanded, ...rest } = prev;
+            return { ...rest, [data._id]: Boolean(wasExpanded) };
+          });
+        },
+        (error) => {
+          setCategories(prev => prev.filter(c => c._id !== tempId));
+          showMsg('error', error.response?.data?.message || 'Failed to create category');
+        }
+      );
+    }
+    resetCategoryForm();
   };
 
   const handleEditCategory = (category) => {
@@ -437,14 +771,22 @@ const Admin = () => {
     setShowCategoryForm(true);
   };
 
-  const handleDeleteCategory = async (id) => {
-    if (!window.confirm('Delete this category? Products in it will need reassignment.')) return;
-    try {
-      await axios.delete(`/api/admin/categories/${id}`, { headers: { Authorization: `Bearer ${user.token}` } });
-      showMsg('success', 'Category deleted');
-      fetchCategories();
-      fetchProducts();
-    } catch (error) { showMsg('error', error.response?.data?.message || 'Failed to delete'); }
+  const handleDeleteCategory = (category) => {
+    const inUse = products.filter(p => p.category === category.name).length;
+    if (inUse > 0) {
+      showMsg('error', `Cannot delete category. ${inUse} product(s) are using this category.`);
+      return;
+    }
+    if (!window.confirm('Delete this category?')) return;
+    setCategories(prev => prev.filter(c => c._id !== category._id));
+    enqueue(
+      category._id,
+      () => axios.delete(`/api/admin/categories/${category._id}`, authConfig()),
+      (error) => {
+        setCategories(prev => [...prev, category].sort(byName));
+        showMsg('error', error.response?.data?.message || 'Failed to delete');
+      }
+    );
   };
 
   const resetCategoryForm = () => {
@@ -486,7 +828,15 @@ const Admin = () => {
     await handleBulkFilesSelected(e.dataTransfer.files);
   };
 
-  const handleBulkImport = async () => {
+  // Mirrors the server: price of the newest in-stock product in the category
+  const getFallbackPrice = (category) => {
+    const latest = products
+      .filter(p => p.category === category && p.stock > 0 && !isTempId(p._id))
+      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))[0];
+    return latest?.price ?? 0;
+  };
+
+  const handleBulkImport = () => {
     if (!bulkCategory) {
       showMsg('error', 'Please choose a category for this batch');
       return;
@@ -497,28 +847,56 @@ const Admin = () => {
       return;
     }
 
-    setBulkImporting(true);
-    setBulkStep(3);
-    try {
-      const productsPayload = bulkImages.map((image) => ({
-        image: image.preview,
-        category: bulkCategory
-      }));
-      const { data } = await axios.post(
-        '/api/admin/products/bulk',
-        { category: bulkCategory, products: productsPayload },
-        { headers: { Authorization: `Bearer ${user.token}` } }
-      );
-      const createdCount = data.created || 0;
-      const failedCount = data.failed || 0;
-      showMsg('success', `${createdCount} products created${failedCount ? `, ${failedCount} failed` : ''}`);
-      resetBulkImport();
-      fetchProducts();
-    } catch (error) {
-      showMsg('error', error.response?.data?.message || 'Bulk import failed');
-      setBulkStep(2);
-    }
-    finally { setBulkImporting(false); }
+    const category = bulkCategory;
+    const images = bulkImages;
+    const fallbackPrice = getFallbackPrice(category);
+    const tempIds = images.map(() => makeTempId());
+    const tempProducts = images.map((image, i) => ({
+      _id: tempIds[i],
+      name: '',
+      description: '',
+      price: fallbackPrice,
+      category,
+      color: [],
+      beadType: [],
+      image: image.preview,
+      stock: 1,
+      displayOrder: 0,
+      featuredInCarousel: false,
+      carouselOrder: 0,
+      likesCount: 0
+    }));
+
+    // Server creates them in order, so the newest (last) comes first
+    setProducts(prev => [...[...tempProducts].reverse(), ...prev]);
+    expandCategoryByName(category);
+    resetBulkImport();
+
+    enqueue(
+      'bulk-import',
+      async () => {
+        const { data } = await axios.post(
+          '/api/admin/products/bulk',
+          { category, products: images.map((image) => ({ image: image.preview, category })) },
+          authConfig()
+        );
+        const createdByIndex = new Map((data.products || []).map(r => [r.index - 1, r.product]));
+        setProducts(prev => prev.flatMap(p => {
+          const i = tempIds.indexOf(p._id);
+          if (i === -1) return [p];
+          const created = createdByIndex.get(i);
+          return created ? [{ ...created, image: p.image }] : [];
+        }));
+        if (data.failed) {
+          setSyncFailed(true);
+          showMsg('error', `${data.failed} of ${images.length} products failed to import`);
+        }
+      },
+      (error) => {
+        setProducts(prev => prev.filter(p => !tempIds.includes(p._id)));
+        showMsg('error', error.response?.data?.message || 'Bulk import failed');
+      }
+    );
   };
 
   const resetBulkImport = () => {
@@ -530,94 +908,115 @@ const Admin = () => {
   };
 
   /* ─── Image Preview Modal Handlers ─── */
-  const handleImageClick = (product) => {
-    setSelectedImageProduct(product);
-    setImageModalPreview(product.image);
-    setImageModalDescEdit(product.description || '');
-  };
+  const selectedImageProduct = selectedImageProductId
+    ? products.find(p => p._id === selectedImageProductId) || null
+    : null;
 
-  const handleImageModalDescSave = async (newDesc) => {
+  const handleImageClick = (product) => setSelectedImageProductId(product._id);
+
+  const handleImageModalDescSave = (newDesc) => {
     if (!selectedImageProduct) return;
-    try {
-      await axios.put(
-        `/api/admin/products/${selectedImageProduct._id}`,
-        { description: newDesc },
-        { headers: { Authorization: `Bearer ${user.token}` } }
-      );
-      setSelectedImageProduct(prev => ({ ...prev, description: newDesc }));
-      fetchProducts();
-      showMsg('success', 'Description updated');
-    } catch (error) {
-      showMsg('error', error.response?.data?.message || 'Failed to update description');
-    }
+    updateProduct(selectedImageProduct, { description: newDesc }, 'Failed to update description');
   };
 
   const handleImageModalImageUpload = async (e) => {
     const file = e.target.files[0];
+    e.target.value = '';
     if (!file || !selectedImageProduct) return;
     try {
-      const reader = new FileReader();
-      reader.onloadend = async () => {
-        const base64Image = reader.result;
-        await axios.put(
-          `/api/admin/products/${selectedImageProduct._id}`,
-          { image: base64Image },
-          { headers: { Authorization: `Bearer ${user.token}` } }
-        );
-        setImageModalPreview(base64Image);
-        setSelectedImageProduct(prev => ({ ...prev, image: base64Image }));
-        fetchProducts();
-        showMsg('success', 'Image updated');
-      };
-      reader.readAsDataURL(file);
+      const base64Image = await readFileAsDataURL(file);
+      updateProduct(selectedImageProduct, { image: base64Image }, 'Failed to upload image');
     } catch (error) {
-      showMsg('error', error.response?.data?.message || 'Failed to upload image');
+      showMsg('error', 'Failed to read image');
     }
   };
 
-  const closeImageModal = () => {
-    setSelectedImageProduct(null);
-    setImageModalPreview('');
-    setImageModalDescEdit('');
-  };
+  const closeImageModal = () => setSelectedImageProductId(null);
 
   /* ─── Inquiries ─── */
-  const handleUpdateInquiryStatus = async (id, status) => {
-    try {
-      await axios.put(`/api/contact/${id}`, { status }, { headers: { Authorization: `Bearer ${user.token}` } });
-      fetchInquiries();
-      if (selectedInquiry?._id === id) setSelectedInquiry(prev => ({ ...prev, status }));
-      showMsg('success', 'Status updated');
-    } catch (error) { showMsg('error', 'Failed to update status'); }
+  const setInquiryStatusLocal = (id, status) => {
+    setInquiries(prev => prev.map(i => (i._id === id ? { ...i, status } : i)));
+    setSelectedInquiry(prev => (prev?._id === id ? { ...prev, status } : prev));
   };
 
-  const handleDeleteInquiry = async (id) => {
+  const handleUpdateInquiryStatus = (id, status) => {
+    const previous = (inquiries.find(i => i._id === id) || selectedInquiry)?.status;
+    setInquiryStatusLocal(id, status);
+    enqueueInquiry(
+      id,
+      () => axios.put(`/api/contact/${id}`, { status }, authConfig()),
+      () => {
+        if (previous) setInquiryStatusLocal(id, previous);
+        showMsg('error', 'Failed to update status');
+      }
+    );
+  };
+
+  const handleDeleteInquiry = (id) => {
     if (!window.confirm('Delete this conversation?')) return;
-    try {
-      await axios.delete(`/api/contact/${id}`, { headers: { Authorization: `Bearer ${user.token}` } });
-      fetchInquiries();
-      if (selectedInquiry?._id === id) { setSelectedInquiry(null); setAdminMessages([]); }
-      showMsg('success', 'Conversation deleted');
-    } catch (error) { showMsg('error', 'Failed to delete'); }
+    const index = inquiries.findIndex(i => i._id === id);
+    const inquiry = inquiries[index];
+    setInquiries(prev => prev.filter(i => i._id !== id));
+    if (selectedInquiry?._id === id) { setSelectedInquiry(null); setAdminMessages([]); }
+    enqueueInquiry(
+      id,
+      () => axios.delete(`/api/contact/${id}`, authConfig()),
+      () => {
+        if (inquiry) {
+          setInquiries(prev => {
+            const next = [...prev];
+            next.splice(Math.min(Math.max(index, 0), next.length), 0, inquiry);
+            return next;
+          });
+        }
+        showMsg('error', 'Failed to delete');
+      }
+    );
   };
 
-  const handleAdminReply = async (e) => {
+  const handleAdminReply = (e) => {
     e.preventDefault();
-    if (!adminReplyText.trim() || !selectedInquiry) return;
-    setAdminReplySending(true);
-    try {
-      await axios.post(`/api/contact/${selectedInquiry._id}/messages`, {
-        text: adminReplyText
-      }, { headers: { Authorization: `Bearer ${user.token}` } });
-      setAdminReplyText('');
-      fetchConversationMessages(selectedInquiry._id);
-      fetchInquiries();
-    } catch (error) { showMsg('error', 'Failed to send reply'); }
-    finally { setAdminReplySending(false); }
+    const text = adminReplyText.trim();
+    if (!text || !selectedInquiry) return;
+
+    const inquiryId = selectedInquiry._id;
+    const tempId = makeTempId();
+    const createdAt = new Date().toISOString();
+
+    setAdminMessages(prev => [...prev, { _id: tempId, senderRole: 'admin', text, createdAt, pending: true }]);
+    setAdminReplyText('');
+    setInquiries(prev => prev.map(i => (
+      i._id === inquiryId
+        ? { ...i, status: 'replied', lastMessageAt: createdAt, lastMessage: { text, senderRole: 'admin', createdAt }, messageCount: (i.messageCount || 0) + 1 }
+        : i
+    )));
+    setSelectedInquiry(prev => (
+      prev?._id === inquiryId ? { ...prev, status: 'replied', messageCount: (prev.messageCount || 0) + 1 } : prev
+    ));
+
+    // Hold off message polling so it can't drop the optimistic bubble
+    pendingRepliesRef.current += 1;
+    messagesVersionRef.current += 1;
+    enqueueInquiry(
+      inquiryId,
+      async () => {
+        const { data } = await axios.post(`/api/contact/${inquiryId}/messages`, { text }, authConfig());
+        if (selectedInquiryRef.current?._id !== inquiryId) return;
+        // Keep any later replies that are still sending
+        setAdminMessages(prev => [...(data.messages || []), ...prev.filter(m => m.pending && m._id !== tempId)]);
+      },
+      () => {
+        setAdminMessages(prev => prev.filter(m => m._id !== tempId));
+        setAdminReplyText(current => current || text);
+        showMsg('error', 'Failed to send reply');
+      }
+    ).finally(() => { pendingRepliesRef.current -= 1; });
   };
 
-  const handleSelectConversation = async (inq) => {
+  const handleSelectConversation = (inq) => {
+    if (selectedInquiry?._id !== inq._id) setAdminMessages([]);
     setSelectedInquiry(inq);
+    selectedInquiryRef.current = inq;
     fetchConversationMessages(inq._id);
     if (inq.status === 'new') handleUpdateInquiryStatus(inq._id, 'read');
   };
@@ -636,6 +1035,105 @@ const Admin = () => {
     }
   };
 
+  const renderProductsTable = (groupProducts) => (
+    <div className="products-table-scroll-container">
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => handleDragEnd(event, groupProducts)}>
+        <table className="products-table">
+          <thead>
+            <tr>
+              <th style={{ width: '40px' }}></th>
+              <th>Image</th>
+              <th>Name</th>
+              <th>Colors</th>
+              <th>Bead Types</th>
+              <th>Price</th>
+              <th>Stock</th>
+              <th>Featured</th>
+              <th>Order</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <SortableContext items={groupProducts.map(p => p._id)} strategy={verticalListSortingStrategy}>
+            <tbody>
+              {groupProducts.map((product) => (
+                <SortableProductRow
+                  key={product._id}
+                  product={product}
+                  onInlineSave={handleInlineSave}
+                  onDelete={handleDeleteProduct}
+                  onDuplicate={handleDuplicateProduct}
+                  onCarouselChange={handleCarouselChange}
+                  onImageClick={handleImageClick}
+                  colorSuggestions={colorSuggestions}
+                  beadSuggestions={beadSuggestions}
+                />
+              ))}
+            </tbody>
+          </SortableContext>
+        </table>
+      </DndContext>
+    </div>
+  );
+
+  const renderCategorySection = ({ key, name, description, groupProducts, category }) => {
+    const isExpanded = expandedCategories[key];
+    const isTempCategory = category && isTempId(category._id);
+    return (
+      <motion.div
+        key={key}
+        className={`category-section ${category ? '' : 'uncategorized-section'}`}
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3 }}
+      >
+        <div className="category-header">
+          <button className="expand-btn" onClick={() => toggleCategory(key)}>
+            {isExpanded ? <FaChevronDown /> : <FaChevronRight />}
+          </button>
+          <div className="category-info">
+            <h2>{name}</h2>
+            <p>{description}</p>
+            <span className="product-count">
+              {groupProducts.length} products
+              {isTempCategory && <span className="saving-pill inline">Saving…</span>}
+            </span>
+          </div>
+          <div className="category-actions">
+            {category && (
+              <>
+                <button className="btn-icon btn-edit" onClick={() => handleEditCategory(category)} title="Edit category" disabled={isTempCategory}>
+                  <FaEdit />
+                </button>
+                <button className="btn-icon btn-delete" onClick={() => handleDeleteCategory(category)} title="Delete category" disabled={isTempCategory}>
+                  <FaTrash />
+                </button>
+              </>
+            )}
+            <button className="btn btn-sm btn-primary" onClick={() => { setProductForm({ ...EMPTY_PRODUCT_FORM, category: category ? category.name : '' }); setShowProductForm(true); }}>
+              <FaPlus /> Add Product
+            </button>
+          </div>
+        </div>
+
+        <AnimatePresence>
+          {isExpanded && (
+            <motion.div
+              className="products-list"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.3 }}
+            >
+              {groupProducts.length === 0 ? (
+                <div className="empty-message">No products in this category</div>
+              ) : renderProductsTable(groupProducts)}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </motion.div>
+    );
+  };
+
   if (!user || user.role !== 'admin') return null;
 
   return (
@@ -643,20 +1141,23 @@ const Admin = () => {
       className="admin-container"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      transition={{ duration: 0.4 }}
+      transition={{ duration: 0.2 }}
     >
       <div className="admin-header-bar">
         <h1>Admin Dashboard</h1>
-        <div className="admin-tabs">
-          <button className={`admin-tab ${activeTab === 'products' ? 'active' : ''}`} onClick={() => setActiveTab('products')}>
-            <FaBoxes /> Products
-          </button>
-          <button className={`admin-tab ${activeTab === 'inquiries' ? 'active' : ''}`} onClick={() => setActiveTab('inquiries')}>
-            <FaInbox /> Inquiries
-            {inquiries.filter(i => i.status === 'new').length > 0 && (
-              <span className="tab-badge">{inquiries.filter(i => i.status === 'new').length}</span>
-            )}
-          </button>
+        <div className="admin-header-right">
+          <SyncIndicator pendingCount={pendingCount} failed={syncFailed} showSaved={showSaved} />
+          <div className="admin-tabs">
+            <button className={`admin-tab ${activeTab === 'products' ? 'active' : ''}`} onClick={() => setActiveTab('products')}>
+              <FaBoxes /> Products
+            </button>
+            <button className={`admin-tab ${activeTab === 'inquiries' ? 'active' : ''}`} onClick={() => setActiveTab('inquiries')}>
+              <FaInbox /> Inquiries
+              {inquiries.filter(i => i.status === 'new').length > 0 && (
+                <span className="tab-badge">{inquiries.filter(i => i.status === 'new').length}</span>
+              )}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -677,7 +1178,7 @@ const Admin = () => {
       {activeTab === 'products' && (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.3 }}>
           <div className="admin-toolbar">
-            <button className="btn btn-primary" onClick={() => setShowProductForm(true)}>
+            <button className="btn btn-primary" onClick={() => { setProductForm(EMPTY_PRODUCT_FORM); setShowProductForm(true); }}>
               <FaPlus /> Add Product
             </button>
             <button className="btn btn-secondary" onClick={() => setShowBulkImport(true)}>
@@ -689,99 +1190,23 @@ const Admin = () => {
           </div>
 
           <p className="admin-hint">
-            💡 Double-click Name, Color, Bead Type, or Price cells to edit inline. Drag rows to reorder.
+            💡 Double-click Name, Colors, Bead Types, Price or Stock cells to edit inline. Drag rows to reorder. Changes save in the background.
           </p>
 
           <div className="tree-structure">
-            {categories.map((category) => {
-              const categoryProducts = getProductsByCategory(category.name);
-              const isExpanded = expandedCategories[category._id];
-
-              return (
-                <motion.div
-                  key={category._id}
-                  className="category-section"
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.3 }}
-                >
-                  <div className="category-header">
-                    <button className="expand-btn" onClick={() => toggleCategory(category._id)}>
-                      {isExpanded ? <FaChevronDown /> : <FaChevronRight />}
-                    </button>
-                    <div className="category-info">
-                      <h2>{category.name}</h2>
-                      <p>{category.description}</p>
-                      <span className="product-count">{categoryProducts.length} products</span>
-                    </div>
-                    <div className="category-actions">
-                      <button className="btn-icon btn-edit" onClick={() => handleEditCategory(category)} title="Edit category">
-                        <FaEdit />
-                      </button>
-                      <button className="btn-icon btn-delete" onClick={() => handleDeleteCategory(category._id)} title="Delete category">
-                        <FaTrash />
-                      </button>
-                      <button className="btn btn-sm btn-primary" onClick={() => { setProductForm({ ...productForm, category: category.name }); setShowProductForm(true); }}>
-                        <FaPlus /> Add Product
-                      </button>
-                    </div>
-                  </div>
-
-                  <AnimatePresence>
-                    {isExpanded && (
-                      <motion.div
-                        className="products-list"
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.3 }}
-                      >
-                        {categoryProducts.length === 0 ? (
-                          <div className="empty-message">No products in this category</div>
-                        ) : (
-                          <div className="products-table-scroll-container">
-                            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => handleDragEnd(event, category.name)}>
-                              <table className="products-table">
-                                <thead>
-                                  <tr>
-                                    <th style={{ width: '40px' }}></th>
-                                    <th>Image</th>
-                                    <th>Name</th>
-                                    <th>Color</th>
-                                    <th>Bead Type</th>
-                                    <th>Price</th>
-                                    <th>Stock</th>
-                                    <th>Featured</th>
-                                    <th>Order</th>
-                                    <th>Actions</th>
-                                  </tr>
-                                </thead>
-                                <SortableContext items={categoryProducts.map(p => p._id)} strategy={verticalListSortingStrategy}>
-                                  <tbody>
-                                    {categoryProducts.map((product) => (
-                                      <SortableProductRow
-                                        key={product._id}
-                                        product={product}
-                                        user={user}
-                                        fetchProducts={fetchProducts}
-                                        handleDeleteProduct={handleDeleteProduct}
-                                        handleDuplicateProduct={handleDuplicateProduct}
-                                        handleMoveToLast={handleMoveToLast}
-                                        onImageClick={handleImageClick}
-                                        categories={categories}
-                                      />
-                                    ))}
-                                  </tbody>
-                                </SortableContext>
-                              </table>
-                            </DndContext>
-                          </div>
-                        )}
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </motion.div>
-              );
+            {categories.map((category) => renderCategorySection({
+              key: category._id,
+              name: category.name,
+              description: category.description,
+              groupProducts: getProductsByCategory(category.name),
+              category
+            }))}
+            {uncategorizedProducts.length > 0 && renderCategorySection({
+              key: UNCATEGORIZED_KEY,
+              name: 'Uncategorized',
+              description: 'Products without a category. Assign one by editing the product or its category.',
+              groupProducts: uncategorizedProducts,
+              category: null
             })}
           </div>
         </motion.div>
@@ -856,21 +1281,49 @@ const Admin = () => {
                     {/* Chat messages */}
                     <div className="admin-chat-messages">
                       {adminMessages.map((msg, idx) => (
-                        <div key={msg._id || idx} className={`admin-chat-bubble ${msg.senderRole}`}>
+                        <div key={msg._id || idx} className={`admin-chat-bubble ${msg.senderRole} ${msg.pending ? 'pending' : ''}`}>
                           {(msg.product || msg.playlist) && (
                             <div className="admin-chat-attachment">
                               {msg.product && (
-                                <span><strong>Product:</strong> {msg.product.name}</span>
+                                <Link
+                                  to={`/product/${msg.product._id}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="admin-chat-ref"
+                                  title="Open product page in a new tab"
+                                >
+                                  {msg.product.image
+                                    ? <img src={imageUrl(msg.product.image)} alt={msg.product.name} loading="lazy" />
+                                    : <span className="admin-chat-ref-icon"><FaBox size={12} /></span>}
+                                  <span className="admin-chat-ref-text">
+                                    <span className="admin-chat-ref-label">Product</span>
+                                    <span className="admin-chat-ref-name">{msg.product.name || 'Untitled product'}</span>
+                                  </span>
+                                  <FaExternalLinkAlt size={10} className="admin-chat-ref-external" />
+                                </Link>
                               )}
                               {msg.playlist && (
-                                <span><strong>Collection:</strong> {msg.playlist.name}</span>
+                                <Link
+                                  to={`/playlists/${msg.playlist._id}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="admin-chat-ref"
+                                  title="Open collection in a new tab"
+                                >
+                                  <span className="admin-chat-ref-icon"><FaListUl size={12} /></span>
+                                  <span className="admin-chat-ref-text">
+                                    <span className="admin-chat-ref-label">Collection · {msg.playlist.items?.length || 0} items</span>
+                                    <span className="admin-chat-ref-name">{msg.playlist.name}</span>
+                                  </span>
+                                  <FaExternalLinkAlt size={10} className="admin-chat-ref-external" />
+                                </Link>
                               )}
                             </div>
                           )}
                           <div className="admin-chat-bubble-text">{msg.text}</div>
                           <div className="admin-chat-bubble-meta">
                             <span>{msg.senderRole === 'admin' ? 'You' : msg.sender?.name || 'User'}</span>
-                            <span>{formatAdminTime(msg.createdAt)}</span>
+                            <span>{msg.pending ? 'Sending…' : formatAdminTime(msg.createdAt)}</span>
                           </div>
                         </div>
                       ))}
@@ -885,8 +1338,8 @@ const Admin = () => {
                         onChange={(e) => setAdminReplyText(e.target.value)}
                         placeholder="Type your reply..."
                       />
-                      <button type="submit" className="btn btn-primary btn-sm" disabled={adminReplySending || !adminReplyText.trim()}>
-                        <FaReply /> {adminReplySending ? 'Sending...' : 'Send'}
+                      <button type="submit" className="btn btn-primary btn-sm" disabled={!adminReplyText.trim()}>
+                        <FaReply /> Send
                       </button>
                     </form>
                   </motion.div>
@@ -912,40 +1365,52 @@ const Admin = () => {
                 <button className="close-btn" onClick={resetProductForm}><FaTimes /></button>
               </div>
               <form onSubmit={handleProductSubmit}>
+                <p className="form-hint">All fields are optional — fill in what you have and edit the rest later.</p>
                 <div className="form-group">
-                  <label>Product Name *</label>
-                  <input type="text" value={productForm.name} onChange={(e) => setProductForm({ ...productForm, name: e.target.value })} required />
+                  <label>Product Name</label>
+                  <input type="text" value={productForm.name} onChange={(e) => setProductForm({ ...productForm, name: e.target.value })} />
                 </div>
                 <div className="form-group">
-                  <label>Description *</label>
-                  <textarea value={productForm.description} onChange={(e) => setProductForm({ ...productForm, description: e.target.value })} required rows="3" />
+                  <label>Description</label>
+                  <textarea value={productForm.description} onChange={(e) => setProductForm({ ...productForm, description: e.target.value })} rows="3" />
                 </div>
                 <div className="form-row">
                   <div className="form-group">
-                    <label>Price *</label>
-                    <input type="number" step="0.01" value={productForm.price} onChange={(e) => setProductForm({ ...productForm, price: e.target.value })} required />
+                    <label>Price</label>
+                    <input type="number" step="0.01" min="0" value={productForm.price} onChange={(e) => setProductForm({ ...productForm, price: e.target.value })} placeholder="0" />
                   </div>
                   <div className="form-group">
-                    <label>Stock *</label>
-                    <input type="number" value={productForm.stock} onChange={(e) => setProductForm({ ...productForm, stock: e.target.value })} required />
+                    <label>Stock</label>
+                    <input type="number" min="0" value={productForm.stock} onChange={(e) => setProductForm({ ...productForm, stock: e.target.value })} placeholder="0" />
                   </div>
                 </div>
                 <div className="form-group">
-                  <label>Category *</label>
-                  <select value={productForm.category} onChange={(e) => setProductForm({ ...productForm, category: e.target.value })} required>
-                    <option value="">Select Category</option>
+                  <label>Category</label>
+                  <select value={productForm.category} onChange={(e) => setProductForm({ ...productForm, category: e.target.value })}>
+                    <option value="">No category</option>
                     {categories.map((cat) => (<option key={cat._id} value={cat.name}>{cat.name}</option>))}
                   </select>
                 </div>
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Color</label>
-                    <input type="text" value={productForm.color} onChange={(e) => setProductForm({ ...productForm, color: e.target.value })} placeholder="e.g., Blue, Multi-color" />
-                  </div>
-                  <div className="form-group">
-                    <label>Bead Type</label>
-                    <input type="text" value={productForm.beadType} onChange={(e) => setProductForm({ ...productForm, beadType: e.target.value })} placeholder="e.g., Glass, Crystal, Wood" />
-                  </div>
+                <div className="form-group">
+                  <label>Colors</label>
+                  <TagInput
+                    value={productForm.color}
+                    onChange={(colors) => setProductForm(prev => ({ ...prev, color: colors }))}
+                    suggestions={colorSuggestions}
+                    swatches
+                    label="Add color"
+                    placeholder="e.g., Blue, Gold — press Enter after each"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Bead Types</label>
+                  <TagInput
+                    value={productForm.beadType}
+                    onChange={(beadTypes) => setProductForm(prev => ({ ...prev, beadType: beadTypes }))}
+                    suggestions={beadSuggestions}
+                    label="Add bead type"
+                    placeholder="e.g., Glass, Crystal — press Enter after each"
+                  />
                 </div>
                 <div className="form-row">
                   <div className="form-group">
@@ -956,11 +1421,11 @@ const Admin = () => {
                   </div>
                   <div className="form-group">
                     <label>Carousel Order</label>
-                    <input type="number" value={productForm.carouselOrder} onChange={(e) => setProductForm({ ...productForm, carouselOrder: parseInt(e.target.value) || 0 })} min="0" />
+                    <input type="number" value={productForm.carouselOrder} onChange={(e) => setProductForm({ ...productForm, carouselOrder: parseInt(e.target.value, 10) || 0 })} min="0" />
                   </div>
                 </div>
                 <div className="form-group">
-                  <label>Product Image *</label>
+                  <label>Product Image</label>
                   <div className="image-upload-group">
                     <div className="image-preview">
                       {imagePreview ? <img src={imagePreview} alt="Preview" /> : <div className="image-preview-placeholder">📷</div>}
@@ -973,7 +1438,7 @@ const Admin = () => {
                 </div>
                 <div className="form-actions">
                   <button type="button" className="btn btn-secondary" onClick={resetProductForm}>Cancel</button>
-                  <button type="submit" className="btn btn-primary" disabled={loading}>{loading ? 'Creating...' : 'Create'}</button>
+                  <button type="submit" className="btn btn-primary">Create</button>
                 </div>
               </form>
             </motion.div>
@@ -987,12 +1452,12 @@ const Admin = () => {
           <motion.div className="modal-overlay" onClick={closeImageModal} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <motion.div className="modal-content product-image-modal" onClick={(e) => e.stopPropagation()} initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} transition={{ type: 'spring', damping: 25 }}>
               <div className="modal-header">
-                <h3>{selectedImageProduct.name}</h3>
+                <h3>{selectedImageProduct.name || 'Untitled product'}</h3>
                 <button className="close-btn" onClick={closeImageModal}><FaTimes /></button>
               </div>
               <div className="image-modal-content">
                 <div className="image-modal-main">
-                  <img src={imageModalPreview} alt={selectedImageProduct.name} className="product-image-enlarged" onClick={() => window.open(imageModalPreview, '_blank')} style={{ cursor: 'pointer' }} title="Click to open full size" />
+                  <img src={imageUrl(selectedImageProduct.image)} alt={selectedImageProduct.name} className="product-image-enlarged" onClick={() => window.open(imageUrl(selectedImageProduct.image), '_blank')} style={{ cursor: 'pointer' }} title="Click to open full size" />
                   <div className="image-modal-actions">
                     <input
                       type="file"
@@ -1013,11 +1478,8 @@ const Admin = () => {
                   <div className="form-group">
                     <label>Description</label>
                     <InlineEditCell
-                      value={imageModalDescEdit}
-                      onSave={(v) => {
-                        setImageModalDescEdit(v);
-                        handleImageModalDescSave(v);
-                      }}
+                      value={selectedImageProduct.description || ''}
+                      onSave={handleImageModalDescSave}
                     />
                   </div>
                 </div>
@@ -1047,7 +1509,7 @@ const Admin = () => {
                 </div>
                 <div className="form-actions">
                   <button type="button" className="btn btn-secondary" onClick={resetCategoryForm}>Cancel</button>
-                  <button type="submit" className="btn btn-primary" disabled={loading}>{loading ? 'Saving...' : editingCategory ? 'Update' : 'Create'}</button>
+                  <button type="submit" className="btn btn-primary">{editingCategory ? 'Update' : 'Create'}</button>
                 </div>
               </form>
             </motion.div>
@@ -1072,11 +1534,7 @@ const Admin = () => {
                 </div>
                 <div className="step-line"></div>
                 <div className={`bulk-step ${bulkStep >= 2 ? 'active' : ''}`}>
-                  <span className="step-num">2</span> Preview
-                </div>
-                <div className="step-line"></div>
-                <div className={`bulk-step ${bulkStep >= 3 ? 'active' : ''}`}>
-                  <span className="step-num">3</span> Import
+                  <span className="step-num">2</span> Preview &amp; Import
                 </div>
               </div>
 
@@ -1142,18 +1600,10 @@ const Admin = () => {
                   </div>
                   <div className="form-actions">
                     <button className="btn btn-secondary" onClick={() => { setBulkStep(1); setBulkImages([]); }}>Back</button>
-                    <button className="btn btn-primary" onClick={handleBulkImport} disabled={bulkImporting}>
+                    <button className="btn btn-primary" onClick={handleBulkImport}>
                       <FaUpload /> Import {bulkImages.length} Products
                     </button>
                   </div>
-                </div>
-              )}
-
-              {bulkStep === 3 && (
-                <div className="bulk-upload-area">
-                  <div className="spinner-large"></div>
-                  <h4>Importing products...</h4>
-                  <p>Please wait while we create your products.</p>
                 </div>
               )}
             </motion.div>

@@ -6,6 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import { usePlaylists } from '../context/PlaylistContext';
 import { useFavorites } from '../context/FavoritesContext';
 import ProductCard from '../components/ProductCard';
+import axios, { imageUrl } from '../api/axios';
 
 const FavoritesDetail = ({ onBack }) => {
   const { favorites } = useFavorites();
@@ -64,7 +65,7 @@ const FavoritesDetail = ({ onBack }) => {
   );
 };
 
-const PlaylistDetail = ({ playlist, onBack }) => {
+const PlaylistDetail = ({ playlist, onBack, readOnly = false, ownerName }) => {
   const { deletePlaylist, removeFromPlaylist, updatePlaylist } = usePlaylists();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(playlist.name);
@@ -100,7 +101,9 @@ const PlaylistDetail = ({ playlist, onBack }) => {
 
       <div className="playlist-detail-header">
         <div>
-          {editing ? (
+          {readOnly ? (
+            <h1>{playlist.name}</h1>
+          ) : editing ? (
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
               <input
                 type="text"
@@ -120,8 +123,10 @@ const PlaylistDetail = ({ playlist, onBack }) => {
           )}
           <p style={{ color: 'var(--text-muted)', marginTop: '0.5rem' }}>
             {playlist.items?.length || 0} items
+            {readOnly && ownerName && <> · Collection by <strong>{ownerName}</strong></>}
           </p>
         </div>
+        {!readOnly && (
         <div className="playlist-actions">
           <button className="btn btn-primary btn-sm" onClick={() => navigate('/')}>
             <FaPlus /> Browse & Add Products
@@ -136,16 +141,21 @@ const PlaylistDetail = ({ playlist, onBack }) => {
             <FaTrash /> Delete
           </button>
         </div>
+        )}
       </div>
 
       {(!playlist.items || playlist.items.length === 0) ? (
         <div className="empty-state">
           <FaListUl size={60} color="var(--text-muted)" />
           <h2>This collection is empty</h2>
-          <p>Browse our gallery and add items using the + button on product cards.</p>
-          <button className="btn btn-primary" onClick={() => navigate('/')}>
-            Explore Gallery
-          </button>
+          {!readOnly && (
+            <>
+              <p>Browse our gallery and add items using the + button on product cards.</p>
+              <button className="btn btn-primary" onClick={() => navigate('/')}>
+                Explore Gallery
+              </button>
+            </>
+          )}
         </div>
       ) : (
         <div className="products-grid">
@@ -157,8 +167,8 @@ const PlaylistDetail = ({ playlist, onBack }) => {
                 key={item._id || product._id}
                 product={product}
                 index={idx}
-                collectionId={playlist._id}
-                onRemoveFromCollection={handleRemoveItem}
+                collectionId={readOnly ? undefined : playlist._id}
+                onRemoveFromCollection={readOnly ? undefined : handleRemoveItem}
               />
             );
           })}
@@ -178,6 +188,29 @@ const Playlists = () => {
   const [showFavorites, setShowFavorites] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
+  // A collection that isn't in the viewer's own list (e.g. an admin opening a chat reference)
+  const [remotePlaylist, setRemotePlaylist] = useState(null);
+  const [remoteStatus, setRemoteStatus] = useState('idle'); // 'idle' | 'loading' | 'error'
+  const ownMatch = id ? playlists.find(p => p._id === id) : null;
+  const isOwnPlaylist = Boolean(ownMatch);
+
+  useEffect(() => {
+    if (!id || id === 'favorites' || !user || isOwnPlaylist) return;
+    let cancelled = false;
+    setRemoteStatus('loading');
+    axios.get(`/api/playlists/${id}`, { headers: { Authorization: `Bearer ${user.token}` } })
+      .then(({ data }) => {
+        if (cancelled) return;
+        setRemotePlaylist(data);
+        setRemoteStatus('idle');
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setRemotePlaylist(null);
+        setRemoteStatus('error');
+      });
+    return () => { cancelled = true; };
+  }, [id, user, isOwnPlaylist]);
 
   useEffect(() => {
     if (id === 'favorites') {
@@ -235,7 +268,45 @@ const Playlists = () => {
     );
   }
 
-  if (selectedPlaylist) {
+  if (id && id !== 'favorites' && !isOwnPlaylist) {
+    const backToCollections = () => navigate('/playlists');
+
+    if (remotePlaylist && remotePlaylist._id === id) {
+      const ownerId = remotePlaylist.user?._id || remotePlaylist.user;
+      return (
+        <motion.div
+          className="playlists-page"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.3 }}
+        >
+          <PlaylistDetail
+            key={remotePlaylist._id}
+            playlist={remotePlaylist}
+            onBack={backToCollections}
+            readOnly={String(ownerId) !== String(user._id)}
+            ownerName={remotePlaylist.user?.name}
+          />
+        </motion.div>
+      );
+    }
+
+    if (remoteStatus === 'error') {
+      return (
+        <div className="empty-state">
+          <FaListUl size={60} color="var(--text-muted)" />
+          <h2>Collection not found</h2>
+          <p>It may have been deleted, or you don't have access to it.</p>
+          <button className="btn btn-primary" onClick={backToCollections}>Back to Collections</button>
+        </div>
+      );
+    }
+
+    return <div className="loading">Loading collection...</div>;
+  }
+
+  const detailPlaylist = ownMatch || selectedPlaylist;
+  if (detailPlaylist) {
     return (
       <motion.div
         className="playlists-page"
@@ -245,7 +316,8 @@ const Playlists = () => {
         transition={{ duration: 0.3 }}
       >
         <PlaylistDetail
-          playlist={selectedPlaylist}
+          key={detailPlaylist._id}
+          playlist={detailPlaylist}
           onBack={() => { setSelectedPlaylist(null); setShowFavorites(false); navigate('/playlists'); }}
         />
       </motion.div>
@@ -359,7 +431,7 @@ const Playlists = () => {
               >
                 <div className="playlist-cover">
                   {coverImg ? (
-                    <img src={coverImg} alt={playlist.name} />
+                    <img src={imageUrl(coverImg)} alt={playlist.name} loading="lazy" decoding="async" />
                   ) : (
                     <div className="playlist-cover-empty"><FaListUl /></div>
                   )}

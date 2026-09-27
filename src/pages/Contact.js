@@ -6,9 +6,11 @@ import {
   FaComments, FaGem, FaClock
 } from 'react-icons/fa';
 import { motion, AnimatePresence } from 'framer-motion';
-import axios from '../api/axios';
+import axios, { imageUrl } from '../api/axios';
 import { useAuth } from '../context/AuthContext';
+import { useCatalog, refreshCatalog, isCatalogStale } from '../data/catalog';
 import { usePlaylists } from '../context/PlaylistContext';
+import { WHATSAPP_URL, INSTAGRAM_URL, INSTAGRAM_HANDLE, EMAIL, EMAIL_URL } from '../config/contact';
 
 const Contact = () => {
   const { user } = useAuth();
@@ -38,7 +40,7 @@ const Contact = () => {
   const [showMsgPicker, setShowMsgPicker] = useState(false);
   const [msgPickerTab, setMsgPickerTab] = useState('products');
   const [msgProductSearch, setMsgProductSearch] = useState('');
-  const [allProducts, setAllProducts] = useState([]);
+  const { products: allProducts, loading: catalogLoading } = useCatalog({ autoRefresh: false });
 
   // Fetch (or create) the user's single chat
   const fetchChat = useCallback(async () => {
@@ -61,11 +63,18 @@ const Contact = () => {
     if (user) fetchChat();
   }, [user, fetchChat]);
 
-  // Poll every 5s
+  // Poll every 5s while the tab is visible; refresh right away when it comes back
   useEffect(() => {
     if (!user) return;
-    const interval = setInterval(fetchChat, 5000);
-    return () => clearInterval(interval);
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') fetchChat();
+    }, 5000);
+    const onVisible = () => { if (document.visibilityState === 'visible') fetchChat(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [user, fetchChat]);
 
   // Scroll to bottom only when user sends a message
@@ -87,17 +96,13 @@ const Contact = () => {
     }
   }, [productId, productName, productPrice, productImage, collectionId, collectionName, user]);
 
-  // Fetch products for picker
+  // Load the shared catalog for the picker the first time it opens
   useEffect(() => {
-    if (showMsgPicker && allProducts.length === 0) {
-      axios.get('/api/products')
-        .then(({ data }) => setAllProducts(data))
-        .catch(() => {});
-    }
-  }, [showMsgPicker, allProducts.length]);
+    if (showMsgPicker && isCatalogStale()) refreshCatalog();
+  }, [showMsgPicker]);
 
   const filteredProducts = allProducts.filter(p =>
-    p.name.toLowerCase().includes(msgProductSearch.toLowerCase())
+    (p.name || '').toLowerCase().includes(msgProductSearch.toLowerCase())
   );
 
   // Send message
@@ -151,7 +156,7 @@ const Contact = () => {
     if (product) {
       return (
         <Link to={`/product/${product._id}`} className="chat-attachment">
-          {product.image && <img src={product.image} alt={product.name} />}
+          {product.image && <img src={imageUrl(product.image)} alt={product.name} loading="lazy" decoding="async" />}
           <div>
             <span className="chat-attachment-label"><FaBox size={10} /> Product</span>
             <span className="chat-attachment-name">{product.name}</span>
@@ -196,10 +201,10 @@ const Contact = () => {
               <input type="text" placeholder="Search products..." value={search} onChange={(e) => setSearch(e.target.value)} className="chat-picker-search" />
               <div className="chat-picker-list">
                 {filteredProducts.length === 0 ? (
-                  <p className="chat-picker-empty">{allProducts.length === 0 ? 'Loading...' : 'No products found'}</p>
+                  <p className="chat-picker-empty">{catalogLoading ? 'Loading...' : 'No products found'}</p>
                 ) : filteredProducts.slice(0, 15).map(p => (
                   <div key={p._id} className="chat-picker-item" onClick={() => onSelectProduct(p)}>
-                    <img src={p.image} alt={p.name} />
+                    <img src={imageUrl(p.image)} alt={p.name} loading="lazy" decoding="async" />
                     <div>
                       <div className="chat-picker-item-name">{p.name}</div>
                       <div className="chat-picker-item-meta">₹{p.price?.toFixed(2)}</div>
@@ -252,17 +257,17 @@ const Contact = () => {
             </div>
             <div className="social-links-card">
               <h3>Connect With Us</h3>
-              <a href="https://wa.me/919876543210" target="_blank" rel="noopener noreferrer" className="social-link">
+              <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer" className="social-link">
                 <div className="social-link-icon whatsapp"><FaWhatsapp size={20} /></div>
                 <div className="social-link-text"><h4>WhatsApp</h4><p>Chat with us directly</p></div>
               </a>
-              <a href="https://instagram.com/peepda_dreams" target="_blank" rel="noopener noreferrer" className="social-link">
+              <a href={INSTAGRAM_URL} target="_blank" rel="noopener noreferrer" className="social-link">
                 <div className="social-link-icon instagram"><FaInstagram size={20} /></div>
-                <div className="social-link-text"><h4>Instagram</h4><p>@peepda_dreams</p></div>
+                <div className="social-link-text"><h4>Instagram</h4><p>{INSTAGRAM_HANDLE}</p></div>
               </a>
-              <a href="mailto:hello@peepdadreams.com" className="social-link">
+              <a href={EMAIL_URL} className="social-link">
                 <div className="social-link-icon email"><FaEnvelope size={20} /></div>
-                <div className="social-link-text"><h4>Email</h4><p>hello@peepdadreams.com</p></div>
+                <div className="social-link-text"><h4>Email</h4><p>{EMAIL}</p></div>
               </a>
             </div>
           </div>
@@ -291,9 +296,9 @@ const Contact = () => {
                 <h3>Chat with the Handcraftsman</h3>
                 <p>Inquire about products, collections, custom orders, or anything else — we're here to help!</p>
                 <div className="chat-welcome-socials">
-                  <a href="https://wa.me/919876543210" target="_blank" rel="noopener noreferrer" title="WhatsApp"><FaWhatsapp /></a>
-                  <a href="https://instagram.com/peepda_dreams" target="_blank" rel="noopener noreferrer" title="Instagram"><FaInstagram /></a>
-                  <a href="mailto:hello@peepdadreams.com" title="Email"><FaEnvelope /></a>
+                  <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer" title="WhatsApp"><FaWhatsapp /></a>
+                  <a href={INSTAGRAM_URL} target="_blank" rel="noopener noreferrer" title={`Instagram ${INSTAGRAM_HANDLE}`}><FaInstagram /></a>
+                  <a href={EMAIL_URL} title={EMAIL}><FaEnvelope /></a>
                 </div>
                 <div className="chat-welcome-divider" />
               </div>

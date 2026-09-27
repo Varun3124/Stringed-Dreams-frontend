@@ -1,15 +1,19 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { FaHeart, FaRegHeart, FaArrowLeft, FaEnvelope, FaPlus, FaListUl } from 'react-icons/fa';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { FaHeart, FaRegHeart, FaArrowLeft, FaEnvelope, FaPlus, FaListUl, FaWhatsapp } from 'react-icons/fa';
 import { motion, AnimatePresence } from 'framer-motion';
-import axios from '../api/axios';
+import axios, { imageUrl } from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 import { useFavorites } from '../context/FavoritesContext';
 import { usePlaylists } from '../context/PlaylistContext';
+import { TagChips } from '../components/TagInput';
+import { toList } from '../utils/tags';
+import { whatsappLink } from '../config/contact';
 
 const ProductDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
   const { toggleFavorite, isFavorite: checkIsFavorite } = useFavorites();
   const { playlists, addToPlaylist, createPlaylist } = usePlaylists();
@@ -127,27 +131,32 @@ const ProductDetail = () => {
   );
   if (!product) return <div className="message error">Product not found</div>;
 
+  const colors = toList(product.color);
+  const beadTypes = toList(product.beadType);
+  const productUrl = `${window.location.origin}/product/${product._id}`;
+
   return (
     <motion.div 
       className="product-detail-container"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      transition={{ duration: 0.4 }}
+      transition={{ duration: 0.2 }}
     >
       {message.text && (
         <div className={`message ${message.type}`}>{message.text}</div>
       )}
-      
-      <button 
-        className="back-btn" 
-        onClick={() => navigate(-1)}
+
+      {/* Opened directly (e.g. in a new tab from the admin chat) there's no history to go back to */}
+      <button
+        className="back-btn"
+        onClick={() => (location.key === 'default' ? navigate('/') : navigate(-1))}
       >
         <FaArrowLeft /> Back to Gallery
       </button>
 
       <div className="product-detail-card">
         <div className="product-detail-image">
-          <img src={product.image} alt={product.name} />
+          <img src={imageUrl(product.image)} alt={product.name} decoding="async" fetchpriority="high" />
         </div>
         <div className="product-detail-info">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
@@ -170,7 +179,24 @@ const ProductDetail = () => {
           <p className="product-detail-price">₹{product.price.toFixed(2)}</p>
           
           <p className="product-description">{product.description}</p>
-          
+
+          {(colors.length > 0 || beadTypes.length > 0) && (
+            <dl className="product-attributes">
+              {colors.length > 0 && (
+                <div>
+                  <dt>{colors.length === 1 ? 'Color' : 'Colors'}</dt>
+                  <dd><TagChips values={colors} swatches /></dd>
+                </div>
+              )}
+              {beadTypes.length > 0 && (
+                <div>
+                  <dt>{beadTypes.length === 1 ? 'Bead Type' : 'Bead Types'}</dt>
+                  <dd><TagChips values={beadTypes} /></dd>
+                </div>
+              )}
+            </dl>
+          )}
+
           <div className="product-stock-info">
             {product.stock > 0 ? (
               <span className="in-stock">✓ In Stock ({product.stock} available)</span>
@@ -257,6 +283,14 @@ const ProductDetail = () => {
             >
               <FaEnvelope /> Ask About This Product
             </button>
+            <a
+              className="whatsapp-btn"
+              href={whatsappLink(`Can you tell me more about ${productUrl}`)}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <FaWhatsapp size={18} /> Continue on WhatsApp
+            </a>
           </div>
         </div>
       </div>

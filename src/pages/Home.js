@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import axios from '../api/axios';
+import { imageUrl } from '../api/axios';
 import { FaChevronLeft, FaChevronRight } from 'react-icons/fa';
 import { motion } from 'framer-motion';
 import ProductCard from '../components/ProductCard';
+import { useCatalog } from '../data/catalog';
 
 const CategoryCarousel = ({ category, products }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -81,7 +82,7 @@ const CategoryCarousel = ({ category, products }) => {
               className="category-scroll-card"
               onClick={() => navigate(`/product/${product._id}`)}
             >
-              <img src={product.image} alt={product.name} />
+              <img src={imageUrl(product.image)} alt={product.name} loading="lazy" decoding="async" />
               <div className="category-scroll-card-name">{product.name}</div>
             </div>
           ))}
@@ -134,10 +135,8 @@ const CategoryCarousel = ({ category, products }) => {
 };
 
 const Home = () => {
-  const [categories, setCategories] = useState([]);
-  const [allProducts, setAllProducts] = useState([]);
-  const [topProducts, setTopProducts] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // Shared, persisted catalog: renders instantly on reload, refreshes in the background
+  const { products: allProducts, categories, loading } = useCatalog();
   const [centerIndex, setCenterIndex] = useState(0);
   const [isHovered, setIsHovered] = useState(false);
   const [isTransitioning, setIsTransitioning] = useState(false);
@@ -160,58 +159,22 @@ const Home = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  const fetchCategories = async () => {
-    try {
-      console.log('[DEBUG] Fetching categories...');
-      const { data } = await axios.get('/api/products/categories');
-      console.log('[DEBUG] Categories response:', { isArray: Array.isArray(data), count: Array.isArray(data) ? data.length : 'N/A', data });
-      setCategories(Array.isArray(data) ? data : []);
-    } catch (error) {
-      console.error('[DEBUG] Failed to load categories:', error.message, error.response?.status, error.response?.data);
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Featured products in carousel order; fall back to the top-rated in-stock items
+  const topProducts = useMemo(() => {
+    const featured = allProducts
+      .filter(product => product.featuredInCarousel && product.stock > 0)
+      .sort((a, b) => a.carouselOrder - b.carouselOrder);
+    if (featured.length > 0) return featured;
+    return allProducts
+      .filter(product => product.stock > 0)
+      .sort((a, b) => b.rating - a.rating)
+      .slice(0, 5);
+  }, [allProducts]);
 
-  const fetchTopProducts = async () => {
-    try {
-      console.log('[DEBUG] Fetching top products...');
-      const { data } = await axios.get('/api/products');
-      const products = Array.isArray(data) ? data : [];
-      console.log('[DEBUG] Top products raw:', { isArray: Array.isArray(data), totalCount: products.length });
-      // Get featured products sorted by carousel order
-      const featuredProducts = products
-        .filter(product => product.featuredInCarousel && product.stock > 0)
-        .sort((a, b) => a.carouselOrder - b.carouselOrder);
-      
-      console.log('[DEBUG] Featured products:', featuredProducts.length, 'In-stock products:', products.filter(p => p.stock > 0).length);
-      
-      // If no featured products, fallback to top rated
-      if (featuredProducts.length === 0) {
-        const sortedProducts = products
-          .filter(product => product.stock > 0)
-          .sort((a, b) => b.rating - a.rating)
-          .slice(0, 5);
-        console.log('[DEBUG] Using fallback top rated:', sortedProducts.length);
-        setTopProducts(sortedProducts);
-      } else {
-        setTopProducts(featuredProducts);
-      }
-    } catch (error) {
-      console.error('[DEBUG] Failed to load top products:', error.message, error.response?.status, error.response?.data);
-    }
-  };
-
-  const fetchAllProducts = async () => {
-    try {
-      console.log('[DEBUG] Fetching all products...');
-      const { data } = await axios.get('/api/products');
-      console.log('[DEBUG] All products response:', { isArray: Array.isArray(data), count: Array.isArray(data) ? data.length : 'N/A' });
-      setAllProducts(Array.isArray(data) ? data : []);
-    } catch (error) {
-      console.error('[DEBUG] Failed to load all products:', error.message, error.response?.status, error.response?.data);
-    }
-  };
+  // Keep the carousel position valid when a background refresh changes the list
+  useEffect(() => {
+    if (centerIndex >= topProducts.length && topProducts.length > 0) setCenterIndex(0);
+  }, [centerIndex, topProducts.length]);
 
   const getProductsByCategory = (categoryName) => {
     return allProducts
@@ -219,12 +182,6 @@ const Home = () => {
       .sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0))
       .slice(0, 10); // Show first 10 products in carousel
   };
-
-  useEffect(() => {
-    fetchCategories();
-    fetchAllProducts();
-    fetchTopProducts();
-  }, []);
 
   useEffect(() => {
     if (topProducts.length > 0 && !isHovered && !isTransitioning) {
@@ -309,7 +266,7 @@ const Home = () => {
       className="home-container"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      transition={{ duration: 0.5 }}
+      transition={{ duration: 0.2 }}
     >
       {/* Carousel Section */}
       {topProducts.length > 0 && (
@@ -366,7 +323,13 @@ const Home = () => {
                         }
                       }}
                     >
-                      <img src={product.image} alt={product.name} />
+                      <img
+                        src={imageUrl(product.image)}
+                        alt={product.name}
+                        decoding="async"
+                        loading={Math.abs(position) <= 1 ? 'eager' : 'lazy'}
+                        fetchpriority={position === 0 ? 'high' : 'auto'}
+                      />
                       <div className="carousel-item-overlay">
                         <h3>{product.name}</h3>
                       </div>

@@ -1,33 +1,49 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { FaUser, FaSun, FaMoon, FaSearch, FaListUl, FaEnvelope, FaSignOutAlt, FaUserEdit } from 'react-icons/fa';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
 import { useFavorites } from '../context/FavoritesContext';
 import { useTheme } from '../context/ThemeContext';
-import axios from '../api/axios';
+import { imageUrl } from '../api/axios';
+import { useCatalog, refreshCatalog, isCatalogStale } from '../data/catalog';
+import { toList } from '../utils/tags';
 
 const Header = () => {
   const { user, logout } = useAuth();
   const { favorites } = useFavorites();
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
-  
+  // Search runs over the shared catalog; it's only fetched here once someone searches
+  const { products } = useCatalog({ autoRefresh: false });
+
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState([]);
   const searchRef = useRef(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const profileRef = useRef(null);
+  const headerRef = useRef(null);
 
   const favoritesCount = favorites?.items?.length || 0;
+
+  // Publish the header's height so sticky page elements can sit right below it
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const update = () => {
+      document.documentElement.style.setProperty('--header-height', `${Math.round(el.getBoundingClientRect().height)}px`);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (searchRef.current && !searchRef.current.contains(e.target)) {
         setSearchOpen(false);
         setSearchQuery('');
-        setSearchResults([]);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -50,35 +66,30 @@ const Header = () => {
     navigate('/');
   };
 
+  const query = searchQuery.trim().toLowerCase();
+
   useEffect(() => {
-    if (searchQuery.trim().length < 2) {
-      setSearchResults([]);
-      return;
-    }
-    const timer = setTimeout(async () => {
-      try {
-        const { data } = await axios.get('/api/products');
-        const filtered = data.filter(p =>
-          p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          p.category.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          (p.color && p.color.toLowerCase().includes(searchQuery.toLowerCase()))
-        ).slice(0, 6);
-        setSearchResults(filtered);
-      } catch (err) {
-        console.error('Search error:', err);
-      }
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
+    if (query.length >= 2 && isCatalogStale()) refreshCatalog();
+  }, [query]);
+
+  const searchResults = useMemo(() => {
+    if (query.length < 2) return [];
+    return products.filter(p =>
+      (p.name || '').toLowerCase().includes(query) ||
+      (p.category || '').toLowerCase().includes(query) ||
+      toList(p.color).some(c => c.toLowerCase().includes(query)) ||
+      toList(p.beadType).some(b => b.toLowerCase().includes(query))
+    ).slice(0, 6);
+  }, [products, query]);
 
   const handleResultClick = (productId) => {
     navigate(`/product/${productId}`);
     setSearchQuery('');
-    setSearchResults([]);
   };
 
   return (
-    <motion.header 
+    <motion.header
+      ref={headerRef}
       className="header"
       initial={{ y: -80 }}
       animate={{ y: 0 }}
@@ -87,10 +98,13 @@ const Header = () => {
       <div className="container">
         <nav>
           <Link to="/" style={{ textDecoration: 'none', color: 'inherit', display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            <img 
-              src="/logo.png" 
-              alt="Stringed Dreams Logo" 
+            <img
+              src="/logo-128.png"
+              alt="Stringed Dreams Logo"
               className="header-logo-img"
+              width="48"
+              height="50"
+              decoding="async"
               style={{ width: 'auto', filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.2))' }}
             />
             <h1>Stringed Dreams</h1>
@@ -150,7 +164,7 @@ const Header = () => {
                       className="search-result-item"
                       onClick={() => handleResultClick(product._id)}
                     >
-                      <img src={product.image} alt={product.name} />
+                      <img src={imageUrl(product.image)} alt={product.name} loading="lazy" decoding="async" />
                       <div className="search-result-info">
                         <h4>{product.name}</h4>
                         <p>₹{product.price}</p>

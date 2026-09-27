@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
 import { useFavorites } from '../context/FavoritesContext';
 import { usePlaylists } from '../context/PlaylistContext';
+import { imageUrl } from '../api/axios';
 
 const ProductCard = ({ product, index = 0, collectionId, onRemoveFromCollection }) => {
   const navigate = useNavigate();
@@ -97,7 +98,7 @@ const ProductCard = ({ product, index = 0, collectionId, onRemoveFromCollection 
       transition={{ duration: 0.4, delay: index * 0.05 }}
     >
       <div className="product-image-wrapper">
-        <img src={product.image} alt={product.name} className="product-image" />
+        <img src={imageUrl(product.image)} alt={product.name} className="product-image" loading="lazy" decoding="async" />
         
         {/* Heart Overlay */}
         <motion.button

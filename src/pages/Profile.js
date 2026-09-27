@@ -1,11 +1,10 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Navigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { motion } from 'framer-motion';
 import { FaUser, FaEnvelope, FaPhone, FaLock, FaShieldAlt } from 'react-icons/fa';
 
 const Profile = () => {
-  const navigate = useNavigate();
   const { user, updateProfile } = useAuth();
   
   const [formData, setFormData] = useState({
@@ -19,8 +18,7 @@ const Profile = () => {
   const [loading, setLoading] = useState(false);
 
   if (!user) {
-    navigate('/login');
-    return null;
+    return <Navigate to="/login" replace />;
   }
 
   const handleChange = (e) => {
