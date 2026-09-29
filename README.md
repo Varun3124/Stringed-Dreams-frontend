@@ -19,7 +19,7 @@ React frontend for Stringed Dreams, a showcase for handcrafted bead jewelry. It 
 ### Admin (`/admin`)
 - Changes show instantly and save in the background. A header indicator reads "Saving…", "All changes saved" or "Some changes failed", and a failed save rolls back with an error.
 - **Products:**
-  - Inline editing: name, price and stock as text; colors and bead types as chips
+  - Inline editing: name, price, discount price and stock as text; colors and bead types as chips
   - Drag-and-drop ordering, duplicating, and carousel settings
   - Bulk import from images
   - Every Add Product field is optional, and products without a category appear under "Uncategorized"

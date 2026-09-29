@@ -1113,6 +1113,53 @@ img { max-width: 100%; }
 
 .product-thumb { width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border); border-radius: var(--radius-sm); }
 .price-cell { color: var(--accent); font-weight: 600; }
+.price-cell.discount-active { color: var(--success); }
+
+/* Discounted prices: the original is struck through with a slightly slanted line,
+   followed by the price customers pay */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+.price-tag { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0.1em 0.55em; }
+.price-original {
+  position: relative;
+  display: inline-block;
+  text-decoration: none;
+  font-size: clamp(0.72rem, 0.62em, 1.6rem);
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.price-original::after {
+  content: '';
+  position: absolute;
+  left: -4%;
+  right: -4%;
+  top: 50%;
+  height: max(1.5px, 0.08em);
+  border-radius: 2px;
+  background: var(--danger);
+  box-shadow: 0 0 6px rgba(231, 76, 60, 0.35);
+  transform: translateY(-50%) rotate(-6deg);
+  animation: price-strike-draw 0.5s ease-out 0.15s backwards;
+}
+.price-current { text-decoration: none; }
+.chat-picker-item-meta .price-current { color: var(--accent); font-weight: 600; }
+
+@keyframes price-strike-draw {
+  from { clip-path: inset(-8px 100% -8px 0); }
+  to { clip-path: inset(-8px -8px -8px 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .price-original::after { animation: none; }
+}
 
 /* Tag chips (colors, bead types) & tag input */
 .tag-chip-list { display: inline-flex; flex-wrap: wrap; gap: 0.3rem; }
@@ -3599,7 +3646,7 @@ img { max-width: 100%; }
   
   .products-table {
     font-size: 0.8rem;
-    min-width: 900px;
+    min-width: 980px;
   }
   
   .products-table th,

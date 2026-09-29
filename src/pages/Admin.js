@@ -18,6 +18,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import TagInput, { TagChips } from '../components/TagInput';
 import { toList } from '../utils/tags';
+import { getPricing } from '../utils/price';
 import { imageUrl } from '../api/axios';
 import { invalidateCatalog } from '../data/catalog';
 
@@ -31,8 +32,18 @@ const byDisplayOrder = (a, b) => (a.displayOrder || 0) - (b.displayOrder || 0);
 const byName = (a, b) => a.name.localeCompare(b.name);
 
 const EMPTY_PRODUCT_FORM = {
-  name: '', description: '', price: '', category: '', color: [], beadType: [],
+  name: '', description: '', price: '', discountPrice: '', category: '', color: [], beadType: [],
   image: '', stock: '', featuredInCarousel: false, carouselOrder: 0, displayOrder: 0
+};
+
+const NUMERIC_FIELD_LABELS = { price: 'price', discountPrice: 'discount price', stock: 'stock' };
+
+// Mirrors the server: a product without a discount follows its price, and an existing
+// discount stays unless the new price drops below it
+const nextDiscountPrice = (product, price) => {
+  const discount = product.discountPrice ?? product.price;
+  const hadDiscount = discount < product.price;
+  return hadDiscount && discount <= price ? discount : price;
 };
 
 /* Double-click (desktop) or long-press (mobile) to start editing */
@@ -191,6 +202,9 @@ const SortableProductRow = ({ product, onInlineSave, onDelete, onDuplicate, onCa
       <td><InlineTagCell value={product.beadType} onSave={(v) => onInlineSave(product, 'beadType', v)} suggestions={beadSuggestions} label="Add bead type" disabled={isTemp} /></td>
       <td className="price-cell">
         <InlineEditCell value={product.price} onSave={(v) => onInlineSave(product, 'price', v)} type="number" disabled={isTemp} />
+      </td>
+      <td className={`price-cell ${getPricing(product).hasDiscount ? 'discount-active' : ''}`}>
+        <InlineEditCell value={product.discountPrice ?? product.price} onSave={(v) => onInlineSave(product, 'discountPrice', v)} type="number" disabled={isTemp} />
       </td>
       <td><InlineEditCell value={product.stock} onSave={(v) => onInlineSave(product, 'stock', v)} type="number" disabled={isTemp} /></td>
       <td>
@@ -595,11 +609,20 @@ const Admin = () => {
 
   const handleInlineSave = (product, field, rawValue) => {
     let value = rawValue;
-    if (field === 'price' || field === 'stock') {
-      value = parseFloat(rawValue);
+    if (field === 'price' || field === 'discountPrice' || field === 'stock') {
+      // Clearing a discount price removes the discount
+      const clearsDiscount = field === 'discountPrice' && String(rawValue ?? '').trim() === '';
+      value = clearsDiscount ? product.price : parseFloat(rawValue);
       if (!Number.isFinite(value) || value < 0) {
-        showMsg('error', `Please enter a valid ${field}`);
+        showMsg('error', `Please enter a valid ${NUMERIC_FIELD_LABELS[field]}`);
         return;
+      }
+      if (field === 'discountPrice') {
+        if (value > product.price) {
+          showMsg('error', "Discount price can't be higher than the price");
+          return;
+        }
+        if (value === (product.discountPrice ?? product.price)) return;
       }
     } else if (field === 'color' || field === 'beadType') {
       value = toList(rawValue);
@@ -607,7 +630,9 @@ const Admin = () => {
       value = String(rawValue ?? '').trim();
     }
 
-    updateProduct(product, { [field]: value });
+    const patch = { [field]: value };
+    if (field === 'price') patch.discountPrice = nextDiscountPrice(product, value);
+    updateProduct(product, patch);
     if (field === 'stock' && value === 0) handleMoveToLast(product);
   };
 
@@ -709,8 +734,21 @@ const Admin = () => {
     e.preventDefault();
     if (!user?.token) { showMsg('error', 'No auth token'); return; }
 
+    // Leaving the discount price blank means no discount
+    const price = Number(productForm.price) || 0;
+    const discountPrice = String(productForm.discountPrice).trim() === '' ? price : Number(productForm.discountPrice);
+    if (!Number.isFinite(discountPrice) || discountPrice < 0) {
+      showMsg('error', 'Please enter a valid discount price');
+      return;
+    }
+    if (discountPrice > price) {
+      showMsg('error', "Discount price can't be higher than the price");
+      return;
+    }
+
     const payload = {
       ...productForm,
+      discountPrice,
       name: productForm.name.trim(),
       category: productForm.category.trim(),
       beadType: toList(productForm.beadType),
@@ -721,7 +759,7 @@ const Admin = () => {
     const tempProduct = {
       ...payload,
       _id: makeTempId(),
-      price: Number(payload.price) || 0,
+      price,
       stock: Number(payload.stock) || 0,
       image: payload.image || PLACEHOLDER_IMAGE,
       displayOrder: 0,
@@ -887,6 +925,7 @@ const Admin = () => {
       name: '',
       description: '',
       price: fallbackPrice,
+      discountPrice: fallbackPrice,
       category,
       color: [],
       beadType: [],
@@ -1078,6 +1117,7 @@ const Admin = () => {
               <th>Colors</th>
               <th>Bead Types</th>
               <th>Price</th>
+              <th>Discount Price</th>
               <th>Stock</th>
               <th>Featured</th>
               <th>Order</th>
@@ -1221,7 +1261,7 @@ const Admin = () => {
           </div>
 
           <p className="admin-hint">
-            💡 Double-click Name, Colors, Bead Types, Price or Stock cells to edit inline. Drag rows to reorder. Changes save in the background.
+            💡 Double-click Name, Colors, Bead Types, Price, Discount Price or Stock cells to edit inline. Drag rows to reorder. Changes save in the background.
           </p>
 
           <div className="tree-structure">
@@ -1410,16 +1450,22 @@ const Admin = () => {
                     <input type="number" step="0.01" min="0" value={productForm.price} onChange={(e) => setProductForm({ ...productForm, price: e.target.value })} placeholder="0" />
                   </div>
                   <div className="form-group">
+                    <label>Discount Price</label>
+                    <input type="number" step="0.01" min="0" value={productForm.discountPrice} onChange={(e) => setProductForm({ ...productForm, discountPrice: e.target.value })} placeholder={productForm.price || '0'} title="Leave blank for no discount" />
+                  </div>
+                </div>
+                <div className="form-row">
+                  <div className="form-group">
                     <label>Stock</label>
                     <input type="number" min="0" value={productForm.stock} onChange={(e) => setProductForm({ ...productForm, stock: e.target.value })} placeholder="0" />
                   </div>
-                </div>
-                <div className="form-group">
-                  <label>Category</label>
-                  <select value={productForm.category} onChange={(e) => setProductForm({ ...productForm, category: e.target.value })}>
-                    <option value="">No category</option>
-                    {categories.map((cat) => (<option key={cat._id} value={cat.name}>{cat.name}</option>))}
-                  </select>
+                  <div className="form-group">
+                    <label>Category</label>
+                    <select value={productForm.category} onChange={(e) => setProductForm({ ...productForm, category: e.target.value })}>
+                      <option value="">No category</option>
+                      {categories.map((cat) => (<option key={cat._id} value={cat.name}>{cat.name}</option>))}
+                    </select>
+                  </div>
                 </div>
                 <div className="form-group">
                   <label>Colors</label>

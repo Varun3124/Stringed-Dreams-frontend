@@ -8,6 +8,7 @@ import { useTheme } from '../context/ThemeContext';
 import { imageUrl } from '../api/axios';
 import { useCatalog, refreshCatalog, isCatalogStale } from '../data/catalog';
 import { toList } from '../utils/tags';
+import PriceTag from './PriceTag';
 
 const Header = () => {
   const { user, logout } = useAuth();
@@ -167,7 +168,7 @@ const Header = () => {
                       <img src={imageUrl(product.image)} alt={product.name} loading="lazy" decoding="async" />
                       <div className="search-result-info">
                         <h4>{product.name}</h4>
-                        <p>₹{product.price}</p>
+                        <p><PriceTag product={product} /></p>
                       </div>
                     </div>
                   ))}

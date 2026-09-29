@@ -7,8 +7,11 @@ import { useAuth } from '../context/AuthContext';
 import { useFavorites } from '../context/FavoritesContext';
 import { usePlaylists } from '../context/PlaylistContext';
 import { TagChips } from '../components/TagInput';
+import PriceTag from '../components/PriceTag';
 import { toList } from '../utils/tags';
 import { whatsappLink } from '../config/contact';
+
+const formatPrice = (amount) => `₹${amount.toFixed(2)}`;
 
 const ProductDetail = () => {
   const { id } = useParams();
@@ -176,7 +179,7 @@ const ProductDetail = () => {
             </span>
           </div>
 
-          <p className="product-detail-price">₹{product.price.toFixed(2)}</p>
+          <p className="product-detail-price"><PriceTag product={product} format={formatPrice} /></p>
           
           <p className="product-description">{product.description}</p>
 

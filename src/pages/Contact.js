@@ -10,7 +10,10 @@ import axios, { imageUrl } from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 import { useCatalog, refreshCatalog, isCatalogStale } from '../data/catalog';
 import { usePlaylists } from '../context/PlaylistContext';
+import PriceTag from '../components/PriceTag';
 import { WHATSAPP_URL, INSTAGRAM_URL, INSTAGRAM_HANDLE, EMAIL, EMAIL_URL } from '../config/contact';
+
+const formatPrice = (amount) => `₹${amount.toFixed(2)}`;
 
 const Contact = () => {
   const { user } = useAuth();
@@ -214,7 +217,7 @@ const Contact = () => {
                     <img src={imageUrl(p.image)} alt={p.name} loading="lazy" decoding="async" />
                     <div>
                       <div className="chat-picker-item-name">{p.name}</div>
-                      <div className="chat-picker-item-meta">₹{p.price?.toFixed(2)}</div>
+                      <div className="chat-picker-item-meta"><PriceTag product={p} format={formatPrice} /></div>
                     </div>
                   </div>
                 ))}

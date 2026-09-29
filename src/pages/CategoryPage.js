@@ -5,6 +5,7 @@ import ProductCard from '../components/ProductCard';
 import PriceRangeSlider, { formatRupees } from '../components/PriceRangeSlider';
 import { useCatalog } from '../data/catalog';
 import { toList, tagKey, cssSwatch } from '../utils/tags';
+import { getPricing } from '../utils/price';
 
 const FILTER_PARAMS = ['color', 'bead', 'min', 'max', 'stock'];
 
@@ -17,8 +18,8 @@ const SORT_OPTIONS = [
 
 const SORTERS = {
   featured: (a, b) => (a.displayOrder || 0) - (b.displayOrder || 0),
-  'price-asc': (a, b) => (Number(a.price) || 0) - (Number(b.price) || 0),
-  'price-desc': (a, b) => (Number(b.price) || 0) - (Number(a.price) || 0),
+  'price-asc': (a, b) => getPricing(a).finalPrice - getPricing(b).finalPrice,
+  'price-desc': (a, b) => getPricing(b).finalPrice - getPricing(a).finalPrice,
   newest: (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
 };
 
@@ -119,7 +120,7 @@ const CategoryPage = () => {
   const beadOptions = useMemo(() => buildOptions(products, 'beadType'), [products]);
   const bounds = useMemo(() => {
     if (products.length === 0) return { min: 0, max: 0, step: 1 };
-    const prices = products.map(p => Number(p.price) || 0);
+    const prices = products.map(p => getPricing(p).finalPrice);
     const rawMin = Math.min(...prices);
     const rawMax = Math.max(...prices);
     const step = pickStep(rawMax - rawMin);
@@ -152,7 +153,7 @@ const CategoryPage = () => {
         const beads = toList(product.beadType).map(tagKey);
         if (!selectedBeads.some(b => beads.includes(b))) return false;
       }
-      const price = Number(product.price) || 0;
+      const price = getPricing(product).finalPrice;
       if (price < priceLow || price > priceHigh) return false;
       if (inStockOnly && !(product.stock > 0)) return false;
       return true;
