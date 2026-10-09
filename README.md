@@ -18,12 +18,15 @@ React frontend for Stringed Dreams, a showcase for handcrafted bead jewelry. It 
 
 ### Admin (`/admin`)
 - Changes show instantly and save in the background. A header indicator reads "Saving…", "All changes saved" or "Some changes failed", and a failed save rolls back with an error.
+- Undo / redo (Ctrl+Z, Ctrl+Y or Ctrl+Shift+Z, Cmd on a Mac, or the buttons next to the save indicator) for every change on the Products tab: edits, Fill, featured and carousel order, reordering, bulk edits, images, adding, duplicating, importing and deleting products, and category changes. Text fields keep their own Ctrl+Z, and the shortcuts are off while a dialog is open. History lasts until the page is left (`src/hooks/useUndoHistory.js`).
 - **Products:**
   - Inline editing: name, price, discount price and stock as text; colors and bead types as chips
   - Drag-and-drop ordering, duplicating, and carousel settings
+  - "Fill" under each price sets the discount price from a discount rate, or the price from a markup on the discount price (rates at the top of the page, rounded to the nearest ₹10, remembered in this browser)
+  - Multi-select ("Select Products", "Select all" per category) and edit the selection at once: colors, bead types, price, discount price, stock and featured. Values every selected product shares are prefilled and can be removed.
   - Bulk import from images
   - Every Add Product field is optional, and products without a category appear under "Uncategorized"
-- **Categories:** create, rename (the products move with it), delete
+- **Categories:** create, rename (the products move with it), delete, and drag to reorder (the home page follows the same order)
 - **Inquiries:** reply, change status, delete. Product and collection references open their pages in a new tab; admins see other users' collections read-only.
 
 ## Setup

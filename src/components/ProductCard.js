@@ -6,6 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import { useFavorites } from '../context/FavoritesContext';
 import { usePlaylists } from '../context/PlaylistContext';
 import { imageUrl } from '../api/axios';
+import PriceTag from './PriceTag';
 
 const ProductCard = ({ product, index = 0, collectionId, onRemoveFromCollection }) => {
   const navigate = useNavigate();
@@ -180,10 +181,13 @@ const ProductCard = ({ product, index = 0, collectionId, onRemoveFromCollection 
       <div className="product-info">
         <h3 className="product-name">{product.name}</h3>
         <p className="product-category">{product.category}</p>
+        <p className="product-price"><PriceTag product={product} /></p>
         <div className="product-meta">
-          <span className="product-likes-mini">
-            <FaHeart size={12} style={{ color: 'var(--accent)' }} /> {localLikesCount} <span className="likes-text">{localLikesCount === 1 ? 'like' : 'likes'}</span>
-          </span>
+          {localLikesCount > 0 && (
+            <span className="product-likes-mini">
+              <FaHeart size={12} style={{ color: 'var(--accent)' }} /> {localLikesCount} <span className="likes-text">{localLikesCount === 1 ? 'like' : 'likes'}</span>
+            </span>
+          )}
           <span className={`product-stock-label ${product.stock > 0 ? 'in-stock' : 'out-of-stock'}`}>
             {product.stock > 0 ? (<><FaCheck size={10} className="stock-icon" /><span className="stock-text">In Stock</span></>) : 'Out of Stock'}
           </span>

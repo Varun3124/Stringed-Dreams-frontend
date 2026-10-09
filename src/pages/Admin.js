@@ -7,7 +7,7 @@ import {
   FaPlus, FaEdit, FaTrash, FaTimes, FaChevronDown, FaChevronRight,
   FaGripVertical, FaCopy, FaFileImport, FaInbox, FaBoxes,
   FaUpload, FaEye, FaReply, FaClock, FaCheckCircle, FaBox, FaListUl,
-  FaExternalLinkAlt, FaExclamationCircle
+  FaExternalLinkAlt, FaExclamationCircle, FaCheckSquare, FaUndo, FaRedo
 } from 'react-icons/fa';
 import {
   DndContext, closestCenter, KeyboardSensor, PointerSensor, TouchSensor, useSensor, useSensors,
@@ -18,7 +18,10 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import TagInput, { TagChips } from '../components/TagInput';
 import { toList } from '../utils/tags';
-import { getPricing } from '../utils/price';
+import { getPricing, nextDiscountPrice, fillDiscountPrice, fillActualPrice } from '../utils/price';
+import { formatRupees } from '../components/PriceRangeSlider';
+import BulkEditModal from '../components/BulkEditModal';
+import useUndoHistory from '../hooks/useUndoHistory';
 import { imageUrl } from '../api/axios';
 import { invalidateCatalog } from '../data/catalog';
 
@@ -29,7 +32,8 @@ const makeTempId = () => `${TEMP_PREFIX}${Date.now()}-${Math.random().toString(3
 const UNCATEGORIZED_KEY = '__uncategorized__';
 const PLACEHOLDER_IMAGE = 'https://via.placeholder.com/300';
 const byDisplayOrder = (a, b) => (a.displayOrder || 0) - (b.displayOrder || 0);
-const byName = (a, b) => a.name.localeCompare(b.name);
+// Categories in dashboard order. Never by name: the sort is stable, so ties keep their place.
+const byCategoryOrder = (a, b) => (a.displayOrder || 0) - (b.displayOrder || 0);
 
 const EMPTY_PRODUCT_FORM = {
   name: '', description: '', price: '', discountPrice: '', category: '', color: [], beadType: [],
@@ -38,13 +42,47 @@ const EMPTY_PRODUCT_FORM = {
 
 const NUMERIC_FIELD_LABELS = { price: 'price', discountPrice: 'discount price', stock: 'stock' };
 
-// Mirrors the server: a product without a discount follows its price, and an existing
-// discount stays unless the new price drops below it
-const nextDiscountPrice = (product, price) => {
-  const discount = product.discountPrice ?? product.price;
-  const hadDiscount = discount < product.price;
-  return hadDiscount && discount <= price ? discount : price;
+// Rates used by the price "Fill" buttons, remembered in this browser
+const PRICE_RATES_KEY = 'sd:admin:priceRates';
+const DEFAULT_PRICE_RATES = { discount: '-10', markup: '+25' };
+const readPriceRates = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PRICE_RATES_KEY) || 'null');
+    return saved && typeof saved === 'object' ? { ...DEFAULT_PRICE_RATES, ...saved } : DEFAULT_PRICE_RATES;
+  } catch {
+    return DEFAULT_PRICE_RATES;
+  }
 };
+// A number that passes `isValid`, else null (which disables the Fill buttons)
+const parseRate = (text, isValid) => {
+  if (String(text ?? '').trim() === '') return null;
+  const num = Number(text);
+  return Number.isFinite(num) && isValid(num) ? num : null;
+};
+const formatRate = (rate) => `${rate > 0 ? '+' : ''}${rate}%`;
+
+const insertAt = (list, index, item) => {
+  const next = [...list];
+  next.splice(Math.min(Math.max(index, 0), next.length), 0, item);
+  return next;
+};
+
+// Labels for undo/redo
+const FIELD_NAMES = {
+  name: 'name', description: 'description', color: 'colors', beadType: 'bead types', price: 'price',
+  discountPrice: 'discount price', stock: 'stock', image: 'image', featuredInCarousel: 'featured', carouselOrder: 'carousel order'
+};
+const productLabel = (product) => `“${product?.name || 'Untitled product'}”`;
+const describeEdit = (product, patch) => (
+  `Edit ${Object.keys(patch).map(k => FIELD_NAMES[k] || k).join(' and ')} of ${productLabel(product)}`
+);
+
+// Ctrl+Z inside these keeps the browser's own text undo
+const TEXT_INPUT_TYPES = new Set(['text', 'number', 'search', 'email', 'url', 'tel', 'password']);
+const isTextField = (el) => Boolean(el) && (
+  el.isContentEditable || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT'
+  || (el.tagName === 'INPUT' && TEXT_INPUT_TYPES.has(el.type))
+);
 
 /* Double-click (desktop) or long-press (mobile) to start editing */
 const useEditTrigger = (onStart, disabled) => {
@@ -159,10 +197,46 @@ const InlineTagCell = ({ value, onSave, suggestions, swatches = false, label, di
   );
 };
 
+/* ─── "Fill" under a price: sets it from the toolbar rates ─── */
+const FillButton = ({ value, current, hint, disabled, onFill }) => (
+  <button
+    type="button"
+    className="btn-fill"
+    disabled={disabled || value === null || value === current}
+    onClick={() => onFill(value)}
+    title={value === null ? 'Fix the rate at the top of the page to use Fill' : `Set to ${formatRupees(value)} (${hint})`}
+  >
+    Fill
+  </button>
+);
+
+/* ─── Sortable category, dragged by the grip in its header ─── */
+const SortableCategory = ({ id, disabled, children }) => {
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id, disabled });
+  const style = {
+    // Translate only: categories differ in height, and scaling would stretch them
+    transform: CSS.Translate.toString(transform),
+    transition,
+    position: 'relative',
+    zIndex: isDragging ? 20 : 'auto'
+  };
+  return (
+    <div ref={setNodeRef} style={style} className={`category-sortable ${isDragging ? 'category-dragging' : ''}`}>
+      {children({ ref: setActivatorNodeRef, ...attributes, ...listeners })}
+    </div>
+  );
+};
+
 /* ─── Sortable Product Row ─── */
-const SortableProductRow = ({ product, onInlineSave, onDelete, onDuplicate, onCarouselChange, onImageClick, colorSuggestions, beadSuggestions }) => {
+const SortableProductRow = ({
+  product, onInlineSave, onDelete, onDuplicate, onCarouselChange, onImageClick, colorSuggestions, beadSuggestions,
+  selectionMode, selected, onToggleSelect, priceRates, onFill
+}) => {
   const isTemp = isTempId(product._id);
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: product._id, disabled: isTemp });
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: product._id, disabled: isTemp || selectionMode });
+  const discount = product.discountPrice ?? product.price;
+  const priceFill = priceRates.markup === null ? null : fillActualPrice(discount, priceRates.markup);
+  const discountFill = priceRates.discount === null ? null : fillDiscountPrice(product.price, priceRates.discount);
   const touchTimerRef = useRef(null);
   const [isDragPressed, setIsDragPressed] = useState(false);
 
@@ -187,10 +261,22 @@ const SortableProductRow = ({ product, onInlineSave, onDelete, onDuplicate, onCa
   };
 
   return (
-    <tr ref={setNodeRef} style={style} className={`${isDragging ? 'row-dragging' : ''} ${isTemp ? 'row-saving' : ''}`}>
-      <td {...attributes} {...listeners} onTouchStart={handleDragGripTouchStart} onTouchEnd={handleDragGripTouchEnd} style={{ cursor: isTemp ? 'default' : 'grab', textAlign: 'center' }} className={isDragPressed ? 'drag-pressed' : ''}>
-        <FaGripVertical style={{ color: 'var(--text-muted)' }} />
-      </td>
+    <tr ref={setNodeRef} style={style} className={`${isDragging ? 'row-dragging' : ''} ${isTemp ? 'row-saving' : ''} ${selected ? 'row-selected' : ''}`}>
+      {selectionMode ? (
+        <td className="select-cell">
+          <input
+            type="checkbox"
+            checked={selected}
+            disabled={isTemp}
+            onChange={() => onToggleSelect(product._id)}
+            aria-label={`Select ${product.name || 'product'}`}
+          />
+        </td>
+      ) : (
+        <td {...attributes} {...listeners} onTouchStart={handleDragGripTouchStart} onTouchEnd={handleDragGripTouchEnd} style={{ cursor: isTemp ? 'default' : 'grab', textAlign: 'center' }} className={isDragPressed ? 'drag-pressed' : ''}>
+          <FaGripVertical style={{ color: 'var(--text-muted)' }} />
+        </td>
+      )}
       <td>
         <div className="product-thumb-wrap">
           <img src={imageUrl(product.image)} alt={product.name} className="product-thumb" loading="lazy" decoding="async" onClick={() => !isTemp && onImageClick(product)} style={{ cursor: isTemp ? 'default' : 'pointer' }} title="Click to view/edit product image" />
@@ -202,9 +288,23 @@ const SortableProductRow = ({ product, onInlineSave, onDelete, onDuplicate, onCa
       <td><InlineTagCell value={product.beadType} onSave={(v) => onInlineSave(product, 'beadType', v)} suggestions={beadSuggestions} label="Add bead type" disabled={isTemp} /></td>
       <td className="price-cell">
         <InlineEditCell value={product.price} onSave={(v) => onInlineSave(product, 'price', v)} type="number" disabled={isTemp} />
+        <FillButton
+          value={priceFill}
+          current={product.price}
+          hint={`discount price ${formatRate(priceRates.markup)}`}
+          disabled={isTemp}
+          onFill={(v) => onFill(product, 'price', v)}
+        />
       </td>
       <td className={`price-cell ${getPricing(product).hasDiscount ? 'discount-active' : ''}`}>
-        <InlineEditCell value={product.discountPrice ?? product.price} onSave={(v) => onInlineSave(product, 'discountPrice', v)} type="number" disabled={isTemp} />
+        <InlineEditCell value={discount} onSave={(v) => onInlineSave(product, 'discountPrice', v)} type="number" disabled={isTemp} />
+        <FillButton
+          value={discountFill}
+          current={discount}
+          hint={`price ${formatRate(priceRates.discount)}`}
+          disabled={isTemp}
+          onFill={(v) => onFill(product, 'discountPrice', v)}
+        />
       </td>
       <td><InlineEditCell value={product.stock} onSave={(v) => onInlineSave(product, 'stock', v)} type="number" disabled={isTemp} /></td>
       <td>
@@ -262,6 +362,9 @@ const Admin = () => {
   const [activeTab, setActiveTab] = useState('products');
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
+  const undoHistory = useUndoHistory();
+  const [historyNotice, setHistoryNotice] = useState(null);
+  const historyNoticeTimerRef = useRef(null);
   const [expandedCategories, setExpandedCategories] = useState({});
   const [message, setMessage] = useState({ type: '', text: '' });
 
@@ -278,6 +381,14 @@ const Admin = () => {
   const [showCategoryForm, setShowCategoryForm] = useState(false);
   const [editingCategory, setEditingCategory] = useState(null);
   const [categoryForm, setCategoryForm] = useState({ name: '', description: '' });
+
+  // Multi-select / bulk edit state
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [showBulkEdit, setShowBulkEdit] = useState(false);
+
+  // Rates for the price "Fill" buttons (as typed; see priceRates)
+  const [priceRateText, setPriceRateText] = useState(readPriceRates);
 
   // Bulk import state
   const [showBulkImport, setShowBulkImport] = useState(false);
@@ -311,6 +422,8 @@ const Admin = () => {
   const messagesVersionRef = useRef(0);
 
   const productsRef = useRef(products);
+  const categoriesRef = useRef(categories);
+  categoriesRef.current = categories;
   productsRef.current = products;
   const selectedInquiryRef = useRef(selectedInquiry);
   selectedInquiryRef.current = selectedInquiry;
@@ -517,6 +630,26 @@ const Admin = () => {
     [products]
   );
 
+  // Derived, so deleted products drop out of the selection on their own
+  const selectedProducts = useMemo(
+    () => products.filter(p => selectedIds.has(p._id) && !isTempId(p._id)),
+    [products, selectedIds]
+  );
+
+  // Discount rate must be a cut (above -100%); the markup can't be negative
+  const priceRates = useMemo(() => ({
+    discount: parseRate(priceRateText.discount, (n) => n > -100 && n <= 0),
+    markup: parseRate(priceRateText.markup, (n) => n >= 0)
+  }), [priceRateText]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(PRICE_RATES_KEY, JSON.stringify(priceRateText));
+    } catch {
+      // Storage unavailable (e.g. private mode); the rates just won't be remembered
+    }
+  }, [priceRateText]);
+
   const handleImageChange = (e) => {
     const file = e.target.files[0];
     if (file) {
@@ -541,6 +674,12 @@ const Admin = () => {
   );
 
   /* ─── Optimistic product operations ─── */
+  // Every edit records how to undo and redo it. Those steps run later, so they call the
+  // latest version of these functions through `ops` and look products up fresh by id.
+  const ops = useRef({});
+  const findProduct = (id) => productsRef.current.find(p => p._id === id);
+  const findCategory = (id) => categoriesRef.current.find(c => c._id === id);
+
   const patchProductLocal = (id, patch) => {
     setProducts(prev => prev.map(p => (p._id === id ? { ...p, ...patch } : p)));
   };
@@ -549,16 +688,25 @@ const Admin = () => {
     setProducts(prev => prev.filter(p => p._id !== id));
   };
 
-  const updateProduct = (product, patch, errorMessage = 'Failed to update product') => {
+  // `undoPatch` replaces the values undo restores (e.g. the stored image instead of its URL)
+  const updateProduct = (product, patch, errorMessage = 'Failed to update product', { label, undoPatch, undoable = true } = {}) => {
     const previous = Object.fromEntries(Object.keys(patch).map(k => [k, product[k]]));
-    patchProductLocal(product._id, patch);
+    const id = product._id;
+    if (undoable) {
+      undoHistory.record({
+        label: label || describeEdit(product, patch),
+        undo: () => ops.current.editProduct(id, undoPatch || previous),
+        redo: () => ops.current.editProduct(id, patch)
+      });
+    }
+    patchProductLocal(id, patch);
     enqueue(
-      product._id,
-      () => axios.put(`/api/admin/products/${product._id}`, patch, authConfig()),
+      id,
+      () => axios.put(`/api/admin/products/${id}`, patch, authConfig()),
       (error) => {
         // Only roll back fields that still hold this change (a later edit wins)
         setProducts(prev => prev.map(p => {
-          if (p._id !== product._id) return p;
+          if (p._id !== id) return p;
           const reverted = { ...p };
           Object.keys(patch).forEach(k => { if (p[k] === patch[k]) reverted[k] = previous[k]; });
           return reverted;
@@ -568,7 +716,25 @@ const Admin = () => {
     );
   };
 
-  const applyOrder = (orderedProducts) => {
+  // Applies a patch to the product as it is now (undo/redo)
+  const editProduct = (id, patch) => {
+    const product = findProduct(id);
+    if (!product) return false;
+    updateProduct(product, patch);
+  };
+
+  // Pass `previousOrder` (the group as it was) to make the change undoable
+  const applyOrder = (orderedProducts, previousOrder) => {
+    if (previousOrder) {
+      const before = previousOrder.map(p => p._id);
+      const after = orderedProducts.map(p => p._id);
+      undoHistory.record({
+        label: 'Reorder products',
+        undo: () => ops.current.applyOrderIds(before),
+        redo: () => ops.current.applyOrderIds(after)
+      });
+    }
+
     const orderMap = new Map(orderedProducts.map((item, index) => [item._id, index]));
     const previous = new Map(orderedProducts.map(p => [p._id, p.displayOrder]));
     setProducts(prev => prev.map(p => (orderMap.has(p._id) ? { ...p, displayOrder: orderMap.get(p._id) } : p)));
@@ -592,10 +758,15 @@ const Admin = () => {
     );
   };
 
+  const applyOrderIds = (ids) => {
+    const ordered = ids.map(findProduct).filter(Boolean);
+    if (ordered.length === 0) return false;
+    applyOrder(ordered);
+  };
+
   const handleMoveToLast = (product) => {
-    const reordered = getGroupFor(product).filter(p => p._id !== product._id);
-    reordered.push(product);
-    applyOrder(reordered);
+    const group = getGroupFor(product);
+    applyOrder([...group.filter(p => p._id !== product._id), product], group);
   };
 
   const handleDragEnd = (event, groupProducts) => {
@@ -604,7 +775,7 @@ const Admin = () => {
     const oldIndex = groupProducts.findIndex(p => p._id === active.id);
     const newIndex = groupProducts.findIndex(p => p._id === over.id);
     if (oldIndex < 0 || newIndex < 0) return;
-    applyOrder(arrayMove(groupProducts, oldIndex, newIndex));
+    applyOrder(arrayMove(groupProducts, oldIndex, newIndex), groupProducts);
   };
 
   const handleInlineSave = (product, field, rawValue) => {
@@ -632,17 +803,28 @@ const Admin = () => {
 
     const patch = { [field]: value };
     if (field === 'price') patch.discountPrice = nextDiscountPrice(product, value);
-    updateProduct(product, patch);
-    if (field === 'stock' && value === 0) handleMoveToLast(product);
+    // Running out of stock also moves the product to the end; one undo reverts both
+    undoHistory.group(describeEdit(product, patch), () => {
+      updateProduct(product, patch);
+      if (field === 'stock' && value === 0) handleMoveToLast(product);
+    });
   };
 
   // Featured toggles save immediately; order edits are debounced while typing
   const handleCarouselChange = (product, patch, delay) => {
     const id = product._id;
+    const before = { featuredInCarousel: product.featuredInCarousel || false, carouselOrder: product.carouselOrder || 0 };
+    undoHistory.record({
+      label: 'featuredInCarousel' in patch
+        ? `${patch.featuredInCarousel ? 'Feature' : 'Unfeature'} ${productLabel(product)}`
+        : `Edit carousel order of ${productLabel(product)}`,
+      mergeKey: delay > 0 ? `carousel-order-${id}` : undefined,
+      undo: () => ops.current.setCarousel(id, before),
+      redo: () => ops.current.setCarousel(id, { ...before, ...patch })
+    });
+
     const existing = carouselTimersRef.current[id];
-    const previous = existing
-      ? existing.previous
-      : { featuredInCarousel: product.featuredInCarousel || false, carouselOrder: product.carouselOrder || 0 };
+    const previous = existing ? existing.previous : before;
 
     if (existing) clearTimeout(existing.timer);
     else changePending(1);
@@ -672,13 +854,83 @@ const Admin = () => {
     carouselTimersRef.current[id] = { timer, previous };
   };
 
+  const setCarousel = (id, values) => {
+    const product = findProduct(id);
+    if (!product) return false;
+    handleCarouselChange(product, values, 0);
+  };
+
+  /*
+   * Creating, deleting and restoring products. A `ref` ({ id }) names one product across
+   * undo/redo; for a product that is still being created, `ref.id` is its temporary id until
+   * the server answers. Deleted products are kept (with the server's full copy, image
+   * included) so the delete can be undone with the same id.
+   */
+  const deletedProductsRef = useRef(new Map());
+
+  const removeProduct = (ref) => {
+    const product = findProduct(ref.id);
+    if (!product) return false;
+    const index = productsRef.current.indexOf(product);
+    if (selectedImageProductId === ref.id) setSelectedImageProductId(null);
+    removeProductLocal(ref.id);
+
+    let resolveSaved;
+    const saved = new Promise(resolve => { resolveSaved = resolve; });
+    deletedProductsRef.current.set(ref, { product, index, saved });
+    // Keyed by the current id, so a product still being created is deleted once it exists
+    enqueue(
+      ref.id,
+      async () => {
+        if (isTempId(ref.id)) { resolveSaved(null); return; } // its creation failed
+        const { data } = await axios.delete(`/api/admin/products/${ref.id}`, authConfig());
+        resolveSaved(data.product || null);
+      },
+      (error) => {
+        resolveSaved(null);
+        deletedProductsRef.current.delete(ref);
+        setProducts(prev => (prev.some(p => p._id === product._id) ? prev : insertAt(prev, index, product)));
+        showMsg('error', error.response?.data?.message || 'Failed to delete');
+      }
+    );
+  };
+
+  const restoreProduct = (ref) => {
+    const deleted = deletedProductsRef.current.get(ref);
+    if (!deleted) return false;
+    if (findProduct(ref.id)) return 'it already exists';
+    deletedProductsRef.current.delete(ref);
+    const restored = { ...deleted.product, _id: ref.id };
+    setProducts(prev => insertAt(prev, deleted.index, restored));
+    enqueue(
+      ref.id,
+      async () => {
+        const doc = await deleted.saved;
+        if (!doc) throw new Error('The deleted product could not be restored');
+        const { data } = await axios.post('/api/admin/products/restore', { product: doc }, authConfig());
+        setProducts(prev => prev.map(p => (p._id === restored._id ? data : p)));
+      },
+      (error) => {
+        removeProductLocal(restored._id);
+        showMsg('error', error.response?.data?.message || error.message || 'Failed to restore product');
+      }
+    );
+  };
+
   // Temporary rows appear instantly; the server copy replaces them when it arrives
-  const createProductInBackground = (tempProduct, request, errorMessage) => {
+  const createProductInBackground = (tempProduct, request, errorMessage, label) => {
+    const ref = { id: tempProduct._id };
+    undoHistory.record({
+      label,
+      undo: () => ops.current.removeProduct(ref),
+      redo: () => ops.current.restoreProduct(ref)
+    });
     setProducts(prev => [tempProduct, ...prev]);
     enqueue(
       tempProduct._id,
       async () => {
         const { data } = await request();
+        ref.id = data._id;
         setProducts(prev => prev.map(p => (p._id === tempProduct._id ? data : p)));
       },
       (error) => {
@@ -690,21 +942,13 @@ const Admin = () => {
 
   const handleDeleteProduct = (product) => {
     if (!window.confirm('Delete this product?')) return;
-    const index = products.findIndex(p => p._id === product._id);
-    if (selectedImageProductId === product._id) setSelectedImageProductId(null);
-    removeProductLocal(product._id);
-    enqueue(
-      product._id,
-      () => axios.delete(`/api/admin/products/${product._id}`, authConfig()),
-      (error) => {
-        setProducts(prev => {
-          const next = [...prev];
-          next.splice(Math.min(Math.max(index, 0), next.length), 0, product);
-          return next;
-        });
-        showMsg('error', error.response?.data?.message || 'Failed to delete');
-      }
-    );
+    const ref = { id: product._id };
+    undoHistory.record({
+      label: `Delete ${productLabel(product)}`,
+      undo: () => ops.current.restoreProduct(ref),
+      redo: () => ops.current.removeProduct(ref)
+    });
+    removeProduct(ref);
   };
 
   const handleDuplicateProduct = (product) => {
@@ -725,8 +969,157 @@ const Admin = () => {
     createProductInBackground(
       tempProduct,
       () => axios.post(`/api/admin/products/${product._id}/duplicate`, {}, authConfig()),
-      'Failed to duplicate'
+      'Failed to duplicate',
+      `Duplicate ${productLabel(product)}`
     );
+  };
+
+  // "Fill" under a row's prices: the price comes from the discount price, and vice versa
+  const handleFill = (product, field, value) => {
+    if (field === 'price') {
+      // Send the discount too, or a product without one would have it follow the new price
+      updateProduct(product, { price: value, discountPrice: product.discountPrice ?? product.price }, undefined, {
+        label: `Fill price of ${productLabel(product)}`
+      });
+    } else {
+      handleInlineSave(product, 'discountPrice', value);
+    }
+  };
+
+  /* ─── Multi-select & bulk edit ─── */
+  const toggleSelect = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const setGroupSelected = (groupProducts, select) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      groupProducts.forEach(p => (select ? next.add(p._id) : next.delete(p._id)));
+      return next;
+    });
+  };
+
+  const exitSelection = () => {
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+    setShowBulkEdit(false);
+  };
+
+  // Applies a Map of id -> patch in one request
+  const updateProducts = (patchById, label) => {
+    const entries = [...patchById].filter(([id]) => findProduct(id));
+    if (entries.length === 0) return false;
+    const patches = new Map(entries);
+    const previousById = new Map(entries.map(([id, patch]) => {
+      const product = findProduct(id);
+      return [id, Object.fromEntries(Object.keys(patch).map(k => [k, product[k]]))];
+    }));
+    undoHistory.record({
+      label,
+      undo: () => ops.current.updateProducts(previousById, label),
+      redo: () => ops.current.updateProducts(patches, label)
+    });
+    setProducts(prev => prev.map(p => (patches.has(p._id) ? { ...p, ...patches.get(p._id) } : p)));
+
+    // Wait for earlier saves to these products, and make later ones wait for this one
+    const ids = [...patches.keys()];
+    const earlier = ids.map(id => queuesRef.current[id]).filter(Boolean);
+    const run = enqueue(
+      'bulk-update',
+      async () => {
+        await Promise.all(earlier);
+        await axios.put('/api/admin/products/bulk-update', {
+          updates: entries.map(([id, patch]) => ({ id, changes: patch }))
+        }, authConfig());
+      },
+      (error) => {
+        // Only roll back fields that still hold this change (a later edit wins)
+        setProducts(prev => prev.map(p => {
+          const patch = patches.get(p._id);
+          if (!patch) return p;
+          const reverted = { ...p };
+          Object.keys(patch).forEach(k => { if (p[k] === patch[k]) reverted[k] = previousById.get(p._id)[k]; });
+          return reverted;
+        }));
+        showMsg('error', error.response?.data?.message || 'Failed to update the selected products');
+      }
+    );
+    ids.forEach(id => { queuesRef.current[id] = run; });
+  };
+
+  // `patches` come from BulkEditModal: [{ product, patch }] for products that change
+  const handleBulkApply = (patches) => {
+    const label = `Edit ${patches.length} product${patches.length === 1 ? '' : 's'}`;
+    undoHistory.group(label, () => {
+      updateProducts(new Map(patches.map(({ product, patch }) => [product._id, patch])), label);
+
+      // Products that ran out of stock move to the end of their category, as with inline edits
+      const zeroed = new Set(patches.filter(({ patch }) => patch.stock === 0).map(({ product }) => product._id));
+      const groups = new Map();
+      patches.forEach(({ product }) => {
+        const key = categoryNames.has(product.category) ? product.category : UNCATEGORIZED_KEY;
+        if (zeroed.has(product._id) && !groups.has(key)) groups.set(key, getGroupFor(product));
+      });
+      groups.forEach(group => applyOrder([
+        ...group.filter(p => !zeroed.has(p._id)),
+        ...group.filter(p => zeroed.has(p._id))
+      ], group));
+    });
+
+    exitSelection();
+    showMsg('success', `Updated ${patches.length} product${patches.length === 1 ? '' : 's'}`);
+  };
+
+  /* ─── Category order ─── */
+  // Pass `previousIds` (the order before) to make the change undoable
+  const applyCategoryOrder = (orderedCategories, previousIds) => {
+    if (previousIds) {
+      const after = orderedCategories.map(c => c._id);
+      undoHistory.record({
+        label: 'Reorder categories',
+        undo: () => ops.current.applyCategoryOrderIds(previousIds),
+        redo: () => ops.current.applyCategoryOrderIds(after)
+      });
+    }
+
+    const previous = new Map(categoriesRef.current.map(c => [c._id, c.displayOrder]));
+    const reordered = orderedCategories.map((c, index) => ({ ...c, displayOrder: index }));
+    setCategories(reordered);
+
+    const payload = reordered
+      .filter(c => !isTempId(c._id))
+      .map(c => ({ id: c._id, displayOrder: c.displayOrder }));
+    enqueue(
+      'category-reorder',
+      () => axios.put('/api/admin/categories/reorder', { categories: payload }, authConfig()),
+      () => {
+        setCategories(prev => prev
+          .map(c => (previous.has(c._id) ? { ...c, displayOrder: previous.get(c._id) } : c))
+          .sort(byCategoryOrder));
+        showMsg('error', 'Failed to save the category order');
+      }
+    );
+  };
+
+  // Categories added since the step was recorded keep their place at the end
+  const applyCategoryOrderIds = (ids) => {
+    const listed = ids.map(findCategory).filter(Boolean);
+    if (listed.length === 0) return false;
+    const rest = categoriesRef.current.filter(c => !ids.includes(c._id));
+    applyCategoryOrder([...listed, ...rest]);
+  };
+
+  const handleCategoryDragEnd = ({ active, over }) => {
+    if (!over || active.id === over.id) return;
+    const oldIndex = categories.findIndex(c => c._id === active.id);
+    const newIndex = categories.findIndex(c => c._id === over.id);
+    if (oldIndex < 0 || newIndex < 0) return;
+    applyCategoryOrder(arrayMove(categories, oldIndex, newIndex), categories.map(c => c._id));
   };
 
   /* ─── Product Creation Form ─── */
@@ -770,7 +1163,8 @@ const Admin = () => {
     createProductInBackground(
       tempProduct,
       () => axios.post('/api/admin/products', payload, authConfig()),
-      'Failed to create product'
+      'Failed to create product',
+      `Add ${productLabel(tempProduct)}`
     );
     expandCategoryByName(payload.category);
     resetProductForm();
@@ -783,6 +1177,113 @@ const Admin = () => {
   };
 
   /* ─── Category CRUD ─── */
+  // Category refs work like product refs: `ref.id` becomes the real id once a new one is saved
+  const deletedCategoriesRef = useRef(new Map());
+
+  const createCategory = ({ name, description }) => {
+    const tempId = makeTempId();
+    const ref = { id: tempId };
+    undoHistory.record({
+      label: `Add category “${name}”`,
+      undo: () => ops.current.removeCategory(ref),
+      redo: () => ops.current.restoreCategory(ref)
+    });
+    // New categories go last, like on the server
+    setCategories(prev => [
+      ...prev,
+      { _id: tempId, name, description, displayOrder: Math.max(-1, ...prev.map(c => c.displayOrder || 0)) + 1 }
+    ].sort(byCategoryOrder));
+    setExpandedCategories(prev => ({ ...prev, [tempId]: false }));
+    enqueue(
+      tempId,
+      async () => {
+        const { data } = await axios.post('/api/admin/categories', { name, description }, authConfig());
+        ref.id = data._id;
+        setCategories(prev => prev.map(c => (c._id === tempId ? data : c)));
+        setExpandedCategories(prev => {
+          const { [tempId]: wasExpanded, ...rest } = prev;
+          return { ...rest, [data._id]: Boolean(wasExpanded) };
+        });
+      },
+      (error) => {
+        setCategories(prev => prev.filter(c => c._id !== tempId));
+        showMsg('error', error.response?.data?.message || 'Failed to create category');
+      }
+    );
+  };
+
+  // Renaming moves the category's products along with it
+  const editCategory = (id, { name, description }) => {
+    const original = findCategory(id);
+    if (!original) return false;
+    if (categoriesRef.current.some(c => c.name === name && c._id !== id)) return `another category is named “${name}”`;
+    undoHistory.record({
+      label: `Edit category “${original.name}”`,
+      undo: () => ops.current.editCategory(id, { name: original.name, description: original.description }),
+      redo: () => ops.current.editCategory(id, { name, description })
+    });
+
+    const renamed = name !== original.name;
+    setCategories(prev => prev.map(c => (c._id === id ? { ...c, name, description } : c)));
+    if (renamed) {
+      setProducts(prev => prev.map(p => (p.category === original.name ? { ...p, category: name } : p)));
+    }
+    enqueue(
+      id,
+      () => axios.put(`/api/admin/categories/${id}`, { name, description }, authConfig()),
+      (error) => {
+        setCategories(prev => prev.map(c => (c._id === id ? original : c)));
+        if (renamed) {
+          setProducts(prev => prev.map(p => (p.category === name ? { ...p, category: original.name } : p)));
+        }
+        showMsg('error', error.response?.data?.message || 'Failed to update category');
+      }
+    );
+  };
+
+  const removeCategory = (ref) => {
+    const category = findCategory(ref.id);
+    if (!category) return false;
+    if (productsRef.current.some(p => p.category === category.name)) return 'it has products in it';
+    deletedCategoriesRef.current.set(ref, category);
+    setCategories(prev => prev.filter(c => c._id !== ref.id));
+    enqueue(
+      ref.id,
+      async () => {
+        if (isTempId(ref.id)) return; // its creation failed
+        await axios.delete(`/api/admin/categories/${ref.id}`, authConfig());
+      },
+      (error) => {
+        deletedCategoriesRef.current.delete(ref);
+        setCategories(prev => (prev.some(c => c._id === category._id) ? prev : [...prev, category].sort(byCategoryOrder)));
+        showMsg('error', error.response?.data?.message || 'Failed to delete');
+      }
+    );
+  };
+
+  const restoreCategory = (ref) => {
+    const deleted = deletedCategoriesRef.current.get(ref);
+    if (!deleted) return false;
+    if (findCategory(ref.id)) return 'it already exists';
+    if (categoriesRef.current.some(c => c.name === deleted.name)) return `another category is named “${deleted.name}”`;
+    deletedCategoriesRef.current.delete(ref);
+    const restored = { ...deleted, _id: ref.id };
+    setCategories(prev => [...prev, restored].sort(byCategoryOrder));
+    enqueue(
+      ref.id,
+      () => axios.post('/api/admin/categories/restore', {
+        _id: restored._id,
+        name: restored.name,
+        description: restored.description,
+        displayOrder: restored.displayOrder
+      }, authConfig()),
+      (error) => {
+        setCategories(prev => prev.filter(c => c._id !== restored._id));
+        showMsg('error', error.response?.data?.message || 'Failed to restore category');
+      }
+    );
+  };
+
   const handleCategorySubmit = (e) => {
     e.preventDefault();
     const name = categoryForm.name.trim();
@@ -793,44 +1294,8 @@ const Admin = () => {
       return;
     }
 
-    if (editingCategory) {
-      const original = editingCategory;
-      const renamed = name !== original.name;
-      setCategories(prev => prev.map(c => (c._id === original._id ? { ...c, name, description } : c)).sort(byName));
-      if (renamed) {
-        setProducts(prev => prev.map(p => (p.category === original.name ? { ...p, category: name } : p)));
-      }
-      enqueue(
-        original._id,
-        () => axios.put(`/api/admin/categories/${original._id}`, { name, description }, authConfig()),
-        (error) => {
-          setCategories(prev => prev.map(c => (c._id === original._id ? original : c)).sort(byName));
-          if (renamed) {
-            setProducts(prev => prev.map(p => (p.category === name ? { ...p, category: original.name } : p)));
-          }
-          showMsg('error', error.response?.data?.message || 'Failed to update category');
-        }
-      );
-    } else {
-      const tempId = makeTempId();
-      setCategories(prev => [...prev, { _id: tempId, name, description }].sort(byName));
-      setExpandedCategories(prev => ({ ...prev, [tempId]: false }));
-      enqueue(
-        tempId,
-        async () => {
-          const { data } = await axios.post('/api/admin/categories', { name, description }, authConfig());
-          setCategories(prev => prev.map(c => (c._id === tempId ? data : c)));
-          setExpandedCategories(prev => {
-            const { [tempId]: wasExpanded, ...rest } = prev;
-            return { ...rest, [data._id]: Boolean(wasExpanded) };
-          });
-        },
-        (error) => {
-          setCategories(prev => prev.filter(c => c._id !== tempId));
-          showMsg('error', error.response?.data?.message || 'Failed to create category');
-        }
-      );
-    }
+    if (editingCategory) editCategory(editingCategory._id, { name, description });
+    else createCategory({ name, description });
     resetCategoryForm();
   };
 
@@ -847,15 +1312,13 @@ const Admin = () => {
       return;
     }
     if (!window.confirm('Delete this category?')) return;
-    setCategories(prev => prev.filter(c => c._id !== category._id));
-    enqueue(
-      category._id,
-      () => axios.delete(`/api/admin/categories/${category._id}`, authConfig()),
-      (error) => {
-        setCategories(prev => [...prev, category].sort(byName));
-        showMsg('error', error.response?.data?.message || 'Failed to delete');
-      }
-    );
+    const ref = { id: category._id };
+    undoHistory.record({
+      label: `Delete category “${category.name}”`,
+      undo: () => ops.current.restoreCategory(ref),
+      redo: () => ops.current.removeCategory(ref)
+    });
+    removeCategory(ref);
   };
 
   const resetCategoryForm = () => {
@@ -920,6 +1383,12 @@ const Admin = () => {
     const images = bulkImages;
     const fallbackPrice = getFallbackPrice(category);
     const tempIds = images.map(() => makeTempId());
+    const refs = tempIds.map(id => ({ id }));
+    undoHistory.record({
+      label: `Import ${images.length} product${images.length === 1 ? '' : 's'}`,
+      undo: () => { refs.forEach(ref => ops.current.removeProduct(ref)); },
+      redo: () => { refs.forEach(ref => ops.current.restoreProduct(ref)); }
+    });
     const tempProducts = images.map((image, i) => ({
       _id: tempIds[i],
       name: '',
@@ -951,6 +1420,7 @@ const Admin = () => {
           authConfig()
         );
         const createdByIndex = new Map((data.products || []).map(r => [r.index - 1, r.product]));
+        createdByIndex.forEach((created, i) => { refs[i].id = created._id; });
         setProducts(prev => prev.flatMap(p => {
           const i = tempIds.indexOf(p._id);
           if (i === -1) return [p];
@@ -989,13 +1459,39 @@ const Admin = () => {
     updateProduct(selectedImageProduct, { description: newDesc }, 'Failed to update description');
   };
 
+  // The image as stored on the server (a data URL, an external URL or the placeholder), so an
+  // image change can be undone. null when it can't be read.
+  const readStoredImage = async (product) => {
+    const src = product.image;
+    if (!src) return PLACEHOLDER_IMAGE;
+    if (!src.startsWith('/api/')) return src;
+    try {
+      const response = await fetch(imageUrl(src));
+      if (!response.ok) return null;
+      if (response.headers.get('X-Image-Placeholder')) return PLACEHOLDER_IMAGE;
+      return await readFileAsDataURL(await response.blob());
+    } catch {
+      return null;
+    }
+  };
+
   const handleImageModalImageUpload = async (e) => {
     const file = e.target.files[0];
     e.target.value = '';
     if (!file || !selectedImageProduct) return;
+    const { _id: id } = selectedImageProduct;
     try {
-      const base64Image = await readFileAsDataURL(file);
-      updateProduct(selectedImageProduct, { image: base64Image }, 'Failed to upload image');
+      const [base64Image, storedImage] = await Promise.all([
+        readFileAsDataURL(file),
+        readStoredImage(selectedImageProduct)
+      ]);
+      const product = findProduct(id);
+      if (!product) return;
+      updateProduct(product, { image: base64Image }, 'Failed to upload image', {
+        label: `Change image of ${productLabel(product)}`,
+        undoPatch: { image: storedImage },
+        undoable: storedImage !== null
+      });
     } catch (error) {
       showMsg('error', 'Failed to read image');
     }
@@ -1137,6 +1633,11 @@ const Admin = () => {
                   onImageClick={handleImageClick}
                   colorSuggestions={colorSuggestions}
                   beadSuggestions={beadSuggestions}
+                  selectionMode={selectionMode}
+                  selected={selectedIds.has(product._id)}
+                  onToggleSelect={toggleSelect}
+                  priceRates={priceRates}
+                  onFill={handleFill}
                 />
               ))}
             </tbody>
@@ -1146,9 +1647,12 @@ const Admin = () => {
     </div>
   );
 
-  const renderCategorySection = ({ key, name, description, groupProducts, category }) => {
+  const renderCategorySection = ({ key, name, description, groupProducts, category, dragHandle }) => {
     const isExpanded = expandedCategories[key];
     const isTempCategory = category && isTempId(category._id);
+    const selectable = groupProducts.filter(p => !isTempId(p._id));
+    const selectedInGroup = selectable.filter(p => selectedIds.has(p._id)).length;
+    const allSelected = selectable.length > 0 && selectedInGroup === selectable.length;
     return (
       <motion.div
         key={key}
@@ -1158,6 +1662,18 @@ const Admin = () => {
         transition={{ duration: 0.3 }}
       >
         <div className="category-header">
+          {dragHandle && (
+            <button
+              type="button"
+              className="category-drag-handle"
+              title="Drag to reorder categories"
+              disabled={isTempCategory}
+              {...dragHandle}
+              aria-label={`Reorder ${name}`}
+            >
+              <FaGripVertical />
+            </button>
+          )}
           <button className="expand-btn" onClick={() => toggleCategory(key)}>
             {isExpanded ? <FaChevronDown /> : <FaChevronRight />}
           </button>
@@ -1166,10 +1682,20 @@ const Admin = () => {
             <p>{description}</p>
             <span className="product-count">
               {groupProducts.length} products
+              {selectionMode && selectedInGroup > 0 && ` · ${selectedInGroup} selected`}
               {isTempCategory && <span className="saving-pill inline">Saving…</span>}
             </span>
           </div>
           <div className="category-actions">
+            {selectionMode && (
+              <button
+                className="btn btn-sm btn-secondary"
+                onClick={() => setGroupSelected(selectable, !allSelected)}
+                disabled={selectable.length === 0}
+              >
+                <FaCheckSquare /> {allSelected ? 'Deselect all' : 'Select all'}
+              </button>
+            )}
             {category && (
               <>
                 <button className="btn-icon btn-edit" onClick={() => handleEditCategory(category)} title="Edit category" disabled={isTempCategory}>
@@ -1205,6 +1731,45 @@ const Admin = () => {
     );
   };
 
+  /* ─── Undo / redo ─── */
+  ops.current = {
+    editProduct, applyOrderIds, setCarousel, removeProduct, restoreProduct, updateProducts,
+    applyCategoryOrderIds, editCategory, removeCategory, restoreCategory
+  };
+
+  const runHistory = (action) => {
+    const result = action === 'undo' ? undoHistory.undo() : undoHistory.redo();
+    if (!result) return;
+    const { step, ok, reason } = result;
+    const text = ok
+      ? `${action === 'undo' ? 'Undid' : 'Redid'}: ${step.label}`
+      : `Couldn't ${action}: ${step.label}${reason ? ` (${reason})` : ''}`;
+    clearTimeout(historyNoticeTimerRef.current);
+    setHistoryNotice({ id: Date.now(), text, ok });
+    historyNoticeTimerRef.current = setTimeout(() => setHistoryNotice(null), ok ? 2500 : 4000);
+  };
+
+  // Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z (Cmd on Mac) on the Products tab. Text fields keep their own
+  // undo, and the shortcuts are off while a dialog is open.
+  const shortcutsRef = useRef(null);
+  shortcutsRef.current = { run: runHistory, enabled: activeTab === 'products' };
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const key = e.key.toLowerCase();
+      const isUndo = key === 'z' && !e.shiftKey;
+      const isRedo = key === 'y' || (key === 'z' && e.shiftKey);
+      if (!isUndo && !isRedo) return;
+      if (!shortcutsRef.current.enabled || isTextField(e.target) || document.querySelector('.modal-overlay')) return;
+      e.preventDefault();
+      shortcutsRef.current.run(isUndo ? 'undo' : 'redo');
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  useEffect(() => () => clearTimeout(historyNoticeTimerRef.current), []);
+
   if (!user || user.role !== 'admin') return null;
 
   return (
@@ -1218,6 +1783,30 @@ const Admin = () => {
         <h1>Admin Dashboard</h1>
         <div className="admin-header-right">
           <SyncIndicator pendingCount={pendingCount} failed={syncFailed} showSaved={showSaved} />
+          {activeTab === 'products' && (
+            <div className="history-buttons">
+              <button
+                type="button"
+                className="history-btn"
+                onClick={() => runHistory('undo')}
+                disabled={!undoHistory.undoLabel}
+                title={undoHistory.undoLabel ? `Undo: ${undoHistory.undoLabel} (Ctrl+Z)` : 'Nothing to undo'}
+                aria-label="Undo"
+              >
+                <FaUndo />
+              </button>
+              <button
+                type="button"
+                className="history-btn"
+                onClick={() => runHistory('redo')}
+                disabled={!undoHistory.redoLabel}
+                title={undoHistory.redoLabel ? `Redo: ${undoHistory.redoLabel} (Ctrl+Y)` : 'Nothing to redo'}
+                aria-label="Redo"
+              >
+                <FaRedo />
+              </button>
+            </div>
+          )}
           <div className="admin-tabs">
             <button className={`admin-tab ${activeTab === 'products' ? 'active' : ''}`} onClick={() => setActiveTab('products')}>
               <FaBoxes /> Products
@@ -1258,20 +1847,72 @@ const Admin = () => {
             <button className="btn btn-secondary" onClick={() => setShowCategoryForm(true)}>
               <FaPlus /> Add Category
             </button>
+            <button
+              className={`btn ${selectionMode ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => (selectionMode ? exitSelection() : setSelectionMode(true))}
+            >
+              <FaCheckSquare /> {selectionMode ? 'Cancel Selecting' : 'Select Products'}
+            </button>
+            <div className="price-rate-fields" title="Used by the Fill buttons under each product's prices">
+              <label className={priceRates.discount === null ? 'invalid' : ''}>
+                Discount rate
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={priceRateText.discount}
+                  onChange={(e) => setPriceRateText(prev => ({ ...prev, discount: e.target.value }))}
+                  aria-invalid={priceRates.discount === null}
+                />
+                %
+              </label>
+              <label className={priceRates.markup === null ? 'invalid' : ''}>
+                Actual price from discount
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={priceRateText.markup}
+                  onChange={(e) => setPriceRateText(prev => ({ ...prev, markup: e.target.value }))}
+                  aria-invalid={priceRates.markup === null}
+                />
+                %
+              </label>
+            </div>
           </div>
 
+          {selectionMode && (
+            <div className="selection-bar">
+              <span className="selection-count"><strong>{selectedProducts.length}</strong> selected</span>
+              <button className="btn btn-sm btn-primary" disabled={selectedProducts.length === 0} onClick={() => setShowBulkEdit(true)}>
+                <FaEdit /> Edit selected
+              </button>
+              <button className="btn btn-sm btn-secondary" disabled={selectedIds.size === 0} onClick={() => setSelectedIds(new Set())}>
+                Clear
+              </button>
+              <button className="btn btn-sm btn-secondary" onClick={exitSelection}>Cancel</button>
+            </div>
+          )}
+
           <p className="admin-hint">
-            💡 Double-click Name, Colors, Bead Types, Price, Discount Price or Stock cells to edit inline. Drag rows to reorder. Changes save in the background.
+            💡 Double-click Name, Colors, Bead Types, Price, Discount Price or Stock cells to edit inline. Fill sets a price from the rates above. Drag rows to reorder products, and the grip beside a category name to reorder categories. Changes save in the background.
           </p>
 
           <div className="tree-structure">
-            {categories.map((category) => renderCategorySection({
-              key: category._id,
-              name: category.name,
-              description: category.description,
-              groupProducts: getProductsByCategory(category.name),
-              category
-            }))}
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleCategoryDragEnd}>
+              <SortableContext items={categories.map(c => c._id)} strategy={verticalListSortingStrategy}>
+                {categories.map((category) => (
+                  <SortableCategory key={category._id} id={category._id} disabled={isTempId(category._id)}>
+                    {(dragHandle) => renderCategorySection({
+                      key: category._id,
+                      name: category.name,
+                      description: category.description,
+                      groupProducts: getProductsByCategory(category.name),
+                      category,
+                      dragHandle
+                    })}
+                  </SortableCategory>
+                ))}
+              </SortableContext>
+            </DndContext>
             {uncategorizedProducts.length > 0 && renderCategorySection({
               key: UNCATEGORIZED_KEY,
               name: 'Uncategorized',
@@ -1424,6 +2065,38 @@ const Admin = () => {
           )}
         </motion.div>
       )}
+
+      {/* ═══════ UNDO / REDO NOTICE ═══════ */}
+      <div className="history-toast-wrap" aria-live="polite">
+        <AnimatePresence>
+          {historyNotice && (
+            <motion.div
+              key={historyNotice.id}
+              className={`history-toast ${historyNotice.ok ? '' : 'failed'}`}
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 16 }}
+              transition={{ duration: 0.2 }}
+            >
+              {historyNotice.text}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* ═══════ BULK EDIT MODAL ═══════ */}
+      <AnimatePresence>
+        {showBulkEdit && selectedProducts.length > 0 && (
+          <BulkEditModal
+            key="bulk-edit"
+            products={selectedProducts}
+            colorSuggestions={colorSuggestions}
+            beadSuggestions={beadSuggestions}
+            onApply={handleBulkApply}
+            onClose={() => setShowBulkEdit(false)}
+          />
+        )}
+      </AnimatePresence>
 
       {/* ═══════ PRODUCT FORM MODAL ═══════ */}
       <AnimatePresence>

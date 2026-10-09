@@ -36,13 +36,14 @@ const CategoryCarousel = ({ category, products }) => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // Prev/next move a whole view (4 products on desktop) at a time
   const scroll = (direction) => {
     if (direction === 'left') {
-      setCurrentIndex((prev) => Math.max(0, prev - 1));
+      setCurrentIndex((prev) => Math.max(0, prev - itemsPerView));
     } else {
       setCurrentIndex((prev) => {
         const maxStart = Math.max(0, products.length - itemsPerView);
-        return prev + 1 > maxStart ? maxStart : prev + 1;
+        return Math.min(prev + itemsPerView, maxStart);
       });
     }
   };
