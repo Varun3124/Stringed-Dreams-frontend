@@ -61,6 +61,40 @@ const parseRate = (text, isValid) => {
 };
 const formatRate = (rate) => `${rate > 0 ? '+' : ''}${rate}%`;
 
+// Price totals for a set of products, split by sold (stock 0) and in stock. Each product counts once.
+const PriceSummary = ({ products, title, variant = '' }) => {
+  const groups = [
+    { label: 'In stock', className: 'in-stock', items: products.filter(p => p.stock > 0) },
+    { label: 'Sold', className: 'sold', items: products.filter(p => !(p.stock > 0)) },
+    { label: 'All', className: 'all', items: products }
+  ].map(group => ({
+    ...group,
+    actual: group.items.reduce((sum, p) => sum + getPricing(p).price, 0),
+    discounted: group.items.reduce((sum, p) => sum + getPricing(p).finalPrice, 0)
+  }));
+
+  return (
+    <section className={`price-summary ${variant}`} aria-label={title || 'Price summary'}>
+      {title && <h3 className="price-summary-title">{title}</h3>}
+      <div className="price-summary-tiles">
+        {groups.map(group => (
+          <div key={group.label} className={`price-summary-tile ${group.className}`}>
+            <div className="price-summary-label">
+              {group.label} <span className="price-summary-count">{group.items.length}</span>
+            </div>
+            <div className="price-summary-value">{formatRupees(group.discounted)}</div>
+            <div className="price-summary-sub">
+              {group.actual !== group.discounted
+                ? <>actual <s>{formatRupees(group.actual)}</s></>
+                : 'no discount'}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+};
+
 const insertAt = (list, index, item) => {
   const next = [...list];
   next.splice(Math.min(Math.max(index, 0), next.length), 0, item);
@@ -306,7 +340,10 @@ const SortableProductRow = ({
           onFill={(v) => onFill(product, 'discountPrice', v)}
         />
       </td>
-      <td><InlineEditCell value={product.stock} onSave={(v) => onInlineSave(product, 'stock', v)} type="number" disabled={isTemp} /></td>
+      <td className="stock-cell">
+        <InlineEditCell value={product.stock} onSave={(v) => onInlineSave(product, 'stock', v)} type="number" disabled={isTemp} />
+        {!(product.stock > 0) && <span className="sold-tag">Sold</span>}
+      </td>
       <td>
         <input
           type="checkbox"
@@ -1712,6 +1749,8 @@ const Admin = () => {
           </div>
         </div>
 
+        {groupProducts.length > 0 && <PriceSummary products={groupProducts} />}
+
         <AnimatePresence>
           {isExpanded && (
             <motion.div
@@ -1921,6 +1960,10 @@ const Admin = () => {
               category: null
             })}
           </div>
+
+          {products.length > 0 && (
+            <PriceSummary products={products} title="Inventory summary" variant="master" />
+          )}
         </motion.div>
       )}
 

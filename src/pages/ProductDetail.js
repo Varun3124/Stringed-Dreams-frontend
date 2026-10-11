@@ -10,6 +10,7 @@ import { TagChips } from '../components/TagInput';
 import PriceTag from '../components/PriceTag';
 import { toList } from '../utils/tags';
 import { whatsappLink } from '../config/contact';
+import { COLLECTIONS_ENABLED } from '../config/features';
 
 const formatPrice = (amount) => `₹${amount.toFixed(2)}`;
 
@@ -204,7 +205,7 @@ const ProductDetail = () => {
             {product.stock > 0 ? (
               <span className="in-stock">✓ In Stock ({product.stock} available)</span>
             ) : (
-              <span className="out-of-stock">✗ Out of Stock</span>
+              <span className="sold">Sold</span>
             )}
           </div>
 
@@ -216,6 +217,7 @@ const ProductDetail = () => {
             >
               {isFavorited ? <FaHeart size={28} /> : <FaRegHeart size={28} />}
             </button>
+            {COLLECTIONS_ENABLED && (
             <div style={{ position: 'relative' }}>
               <button
                 ref={collectionBtnRef}
@@ -280,6 +282,7 @@ const ProductDetail = () => {
                 )}
               </AnimatePresence>
             </div>
+            )}
             <button
               className="contact-product-btn"
               onClick={() => navigate(`/contact?product=${product._id}&name=${encodeURIComponent(product.name)}&price=${product.price}&image=${encodeURIComponent(product.image)}`)}

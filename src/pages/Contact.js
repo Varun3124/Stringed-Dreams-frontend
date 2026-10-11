@@ -12,6 +12,7 @@ import { useCatalog, refreshCatalog, isCatalogStale } from '../data/catalog';
 import { usePlaylists } from '../context/PlaylistContext';
 import PriceTag from '../components/PriceTag';
 import { WHATSAPP_URL, INSTAGRAM_URL, INSTAGRAM_HANDLE, EMAIL, EMAIL_URL } from '../config/contact';
+import { COLLECTIONS_ENABLED } from '../config/features';
 
 const formatPrice = (amount) => `₹${amount.toFixed(2)}`;
 
@@ -201,7 +202,7 @@ const Contact = () => {
         <div className="chat-picker-inner">
           <div className="chat-picker-tabs">
             <button type="button" className={`btn btn-sm ${tab === 'products' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('products')}><FaBox size={11} /> Products</button>
-            {user && (
+            {user && COLLECTIONS_ENABLED && (
               <button type="button" className={`btn btn-sm ${tab === 'collections' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('collections')}><FaListUl size={11} /> Collections</button>
             )}
             <button type="button" className="btn btn-sm btn-secondary" onClick={onClose} style={{ marginLeft: 'auto' }}><FaTimes size={11} /></button>

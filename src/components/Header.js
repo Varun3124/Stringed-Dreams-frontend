@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { FaUser, FaSun, FaMoon, FaSearch, FaListUl, FaEnvelope, FaSignOutAlt, FaUserEdit } from 'react-icons/fa';
+import { FaUser, FaSun, FaMoon, FaSearch, FaHeart, FaEnvelope, FaSignOutAlt, FaUserEdit } from 'react-icons/fa';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
 import { useFavorites } from '../context/FavoritesContext';
@@ -190,8 +190,8 @@ const Header = () => {
           {/* Right: Nav Links */}
           <ul className="nav-links">
             <li>
-              <Link to="/playlists" className="favorites-link">
-                <FaListUl size={16} /> <span>Collections</span>
+              <Link to="/favourites" className="favorites-link">
+                <FaHeart size={16} /> <span>Favourites</span>
                 {user && favoritesCount > 0 && (
                   <motion.span 
                     className="favorites-badge"

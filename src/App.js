@@ -1,10 +1,11 @@
 import React, { Suspense, lazy } from 'react';
-import { Routes, Route, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import Header from './components/Header';
 import ScrollToTop from './components/ScrollToTop';
 import Home from './pages/Home';
 import CategoryPage from './pages/CategoryPage';
+import { COLLECTIONS_ENABLED } from './config/features';
 
 // Less-visited pages load on demand so the first paint ships less JavaScript
 const ProductDetail = lazy(() => import('./pages/ProductDetail'));
@@ -14,6 +15,7 @@ const Profile = lazy(() => import('./pages/Profile'));
 const Admin = lazy(() => import('./pages/Admin'));
 const Contact = lazy(() => import('./pages/Contact'));
 const Playlists = lazy(() => import('./pages/Playlists'));
+const Favourites = lazy(() => import('./pages/Favourites'));
 
 const PageFallback = () => (
   <div className="page-fallback" aria-busy="true" aria-label="Loading page">
@@ -54,8 +56,15 @@ function App() {
               <Route path="/profile" element={<Profile />} />
               <Route path="/admin" element={<Admin />} />
               <Route path="/contact" element={<Contact />} />
-              <Route path="/playlists" element={<Playlists />} />
-              <Route path="/playlists/:id" element={<Playlists />} />
+              <Route path="/favourites" element={<Favourites />} />
+              {COLLECTIONS_ENABLED ? (
+                <>
+                  <Route path="/playlists" element={<Playlists />} />
+                  <Route path="/playlists/:id" element={<Playlists />} />
+                </>
+              ) : (
+                <Route path="/playlists/*" element={<Navigate to="/favourites" replace />} />
+              )}
             </Routes>
           </Suspense>
         </motion.div>

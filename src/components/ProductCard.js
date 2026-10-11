@@ -7,6 +7,7 @@ import { useFavorites } from '../context/FavoritesContext';
 import { usePlaylists } from '../context/PlaylistContext';
 import { imageUrl } from '../api/axios';
 import PriceTag from './PriceTag';
+import { COLLECTIONS_ENABLED } from '../config/features';
 
 const ProductCard = ({ product, index = 0, collectionId, onRemoveFromCollection }) => {
   const navigate = useNavigate();
@@ -113,7 +114,7 @@ const ProductCard = ({ product, index = 0, collectionId, onRemoveFromCollection 
         </motion.button>
 
         {/* Playlist Overlay / Remove from Collection */}
-        {collectionId ? (
+        {!COLLECTIONS_ENABLED ? null : collectionId ? (
           <motion.button
             className="playlist-add-overlay remove-from-collection"
             onClick={(e) => { e.stopPropagation(); onRemoveFromCollection && onRemoveFromCollection(product._id); }}
@@ -188,8 +189,8 @@ const ProductCard = ({ product, index = 0, collectionId, onRemoveFromCollection 
               <FaHeart size={12} style={{ color: 'var(--accent)' }} /> {localLikesCount} <span className="likes-text">{localLikesCount === 1 ? 'like' : 'likes'}</span>
             </span>
           )}
-          <span className={`product-stock-label ${product.stock > 0 ? 'in-stock' : 'out-of-stock'}`}>
-            {product.stock > 0 ? (<><FaCheck size={10} className="stock-icon" /><span className="stock-text">In Stock</span></>) : 'Out of Stock'}
+          <span className={`product-stock-label ${product.stock > 0 ? 'in-stock' : 'sold'}`}>
+            {product.stock > 0 ? (<><FaCheck size={10} className="stock-icon" /><span className="stock-text">In Stock</span></>) : 'Sold'}
           </span>
         </div>
       </div>

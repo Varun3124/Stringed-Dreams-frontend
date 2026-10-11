@@ -22,6 +22,8 @@
   --danger: #e74c3c;
   --danger-hover: #c0392b;
   --danger-bg: #fff5f5;
+  --sold: #f28500;
+  --sold-bg: #fff4e6;
   --success: #38a169;
   --success-bg: #f0fff4;
   --info: #4299e1;
@@ -65,6 +67,8 @@
   --danger: #ff6b6b;
   --danger-hover: #ff4757;
   --danger-bg: #2d1b1b;
+  --sold: #ff9a2e;
+  --sold-bg: #2d2116;
   --success: #51cf66;
   --success-bg: #1b2d1b;
   --info: #5c9fee;
@@ -500,7 +504,7 @@ img { max-width: 100%; }
 
 .product-stock-label { font-size: 0.8rem; font-weight: 600; padding: 0.2rem 0.6rem; border-radius: var(--radius-sm); }
 .product-stock-label.in-stock { color: var(--success); background: var(--success-bg); }
-.product-stock-label.out-of-stock { color: var(--danger); background: var(--danger-bg); }
+.product-stock-label.sold { color: var(--sold); background: var(--sold-bg); }
 
 /* ============================================
    Buttons
@@ -716,7 +720,7 @@ img { max-width: 100%; }
 }
 
 .in-stock { color: var(--success); font-weight: 600; font-size: 1.05rem; }
-.out-of-stock { color: var(--danger); font-weight: 600; font-size: 1.05rem; }
+.sold { color: var(--sold); font-weight: 600; font-size: 1.05rem; }
 
 .favorite-icon-btn {
   background: none;
@@ -3844,3 +3848,99 @@ img { max-width: 100%; }
   }
 }
 
+
+/* ============================================
+   Favourites Page — 4 per row on laptop, 1 per row on mobile
+   ============================================ */
+.favourites-page .products-grid.favourites-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 768px) {
+  .favourites-page .products-grid.favourites-grid { grid-template-columns: 1fr; }
+}
+
+/* ============================================
+   Admin — Sold tag and per-category price totals
+   ============================================ */
+.products-table td.stock-cell { white-space: nowrap; }
+.products-table td.stock-cell .inline-edit-cell { display: inline-block; }
+.sold-tag {
+  margin-left: 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.1rem 0.45rem;
+  border-radius: var(--radius-sm);
+  color: var(--sold);
+  background: var(--sold-bg);
+}
+
+/* Price summary: shown under every category header, and for the whole inventory at the end */
+.price-summary {
+  padding: 0.75rem 1.5rem 1rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+.price-summary-title {
+  font-size: 1.1rem;
+  margin-bottom: 0.75rem;
+  color: var(--text-primary);
+}
+.price-summary-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 0.6rem;
+}
+.price-summary-tile {
+  min-width: 150px;
+  padding: 0.55rem 0.85rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  border-left: 3px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+.price-summary-tile.in-stock { border-left-color: var(--success); }
+.price-summary-tile.sold { border-left-color: var(--sold); }
+.price-summary-tile.all { border-left-color: var(--accent); }
+.price-summary-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.price-summary-tile.in-stock .price-summary-label { color: var(--success); }
+.price-summary-tile.sold .price-summary-label { color: var(--sold); }
+.price-summary-tile.all .price-summary-label { color: var(--accent); }
+.price-summary-count {
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: var(--card-bg);
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+}
+.price-summary-value {
+  margin-top: 0.15rem;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.price-summary-sub { font-size: 0.75rem; color: var(--text-muted); }
+
+/* Whole-inventory version: a standalone card below the categories */
+.price-summary.master {
+  margin-top: 1.5rem;
+  padding: 1.25rem 1.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card-bg);
+  box-shadow: var(--shadow-sm);
+}
+.price-summary.master .price-summary-tile { min-width: 190px; padding: 0.8rem 1rem; }
+.price-summary.master .price-summary-value { font-size: 1.4rem; }
+
+@media (max-width: 600px) {
+  .price-summary { padding: 0.75rem 1rem; }
+  .price-summary-tile { flex: 1 1 100%; min-width: 0; }
+}
