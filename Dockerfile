@@ -14,7 +14,7 @@ ENV REACT_APP_API_URL=$REACT_APP_API_URL
 RUN npm run build
 
 # ---------- Stage 2: serve the static files with nginx ----------
-FROM nginx:1.27-alpine AS runtime
+FROM nginx:1.31-alpine AS runtime
 # Where nginx forwards /api requests (the compose service name by default)
 ENV API_UPSTREAM=http://api:5000
 # Files in /etc/nginx/templates get ${VAR}s filled in when the container starts
