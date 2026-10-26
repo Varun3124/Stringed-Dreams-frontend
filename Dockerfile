@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---------- Stage 1: build the React app ----------
-FROM node:22-alpine AS build
+FROM node:26-alpine AS build
 WORKDIR /app
 # Dependencies first, so this layer is reused until package*.json changes
 COPY package.json package-lock.json ./
