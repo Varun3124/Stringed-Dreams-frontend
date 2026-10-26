@@ -1,0 +1,154 @@
+name: Frontend CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 22
+
+jobs:
+  # ---------------- CI: lint + unit tests ----------------
+  lint-test:
+    name: Lint & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run test:ci
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: coverage/
+          retention-days: 7
+
+  # ---------------- CI: production build ----------------
+  build:
+    name: Production build
+    runs-on: ubuntu-latest
+    env:
+      CI: true                                     # CRA treats warnings as errors
+      REACT_APP_API_URL: ${{ vars.REACT_APP_API_URL }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          path: build/
+          retention-days: 7
+
+  # ---------------- Docker image: build, smoke test, publish ----------------
+  docker:
+    name: Docker build & smoke test
+    needs: [lint-test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: stringed-dreams-frontend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the container
+        run: |
+          docker run -d --name web -p 8080:80 stringed-dreams-frontend:ci
+          for i in $(seq 1 15); do
+            curl -fsS http://localhost:8080/healthz && break
+            sleep 1
+          done
+          # Home page and a client-side route must both return the React app
+          curl -fsS http://localhost:8080/ | grep -q '<div id="root">'
+          curl -fsS http://localhost:8080/admin | grep -q '<div id="root">'
+          echo "Frontend container serves the app and handles client-side routes"
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          IMAGE_NAME=$(echo "ghcr.io/${GITHUB_REPOSITORY_OWNER}/stringed-dreams-frontend" | tr '[:upper:]' '[:lower:]')
+          docker tag stringed-dreams-frontend:ci $IMAGE_NAME:${{ github.sha }}
+          docker tag stringed-dreams-frontend:ci $IMAGE_NAME:latest
+          docker push $IMAGE_NAME:${{ github.sha }}
+          docker push $IMAGE_NAME:latest
+
+  # ---------------- CD: deploy to Vercel ----------------
+  deploy:
+    name: Deploy to Vercel
+    needs: [docker]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ vars.FRONTEND_URL }}
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Check Vercel secrets
+        id: check
+        run: |
+          if [ -z "$VERCEL_TOKEN" ] || [ -z "$VERCEL_ORG_ID" ] || [ -z "$VERCEL_PROJECT_ID" ]; then
+            echo "::warning::Vercel secrets not set - skipping deploy."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Pull Vercel project settings
+        if: steps.check.outputs.skip != 'true'
+        run: npx --yes vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
+      - name: Build
+        if: steps.check.outputs.skip != 'true'
+        run: npx --yes vercel@latest build --prod --token="$VERCEL_TOKEN"
+      - name: Deploy prebuilt output
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          URL=$(npx --yes vercel@latest deploy --prebuilt --prod --token="$VERCEL_TOKEN")
+          echo "Deployed to $URL"
+      - name: Check the live site
+        if: steps.check.outputs.skip != 'true' && vars.FRONTEND_URL != ''
+        run: |
+          sleep 10
+          curl -fsS "${{ vars.FRONTEND_URL }}" | grep -q '<div id="root">'
+          echo "Production site is up"

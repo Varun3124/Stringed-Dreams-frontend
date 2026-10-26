@@ -17,6 +17,8 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
+    "test:ci": "react-scripts test --watchAll=false --ci --coverage",
+    "lint": "eslint src --max-warnings=0",
     "eject": "react-scripts eject"
   },
   "eslintConfig": {
@@ -39,5 +41,14 @@
   "devDependencies": {
     "react-scripts": "5.0.1"
   },
-  "proxy": "http://localhost:5000"
+  "proxy": "http://localhost:5000",
+  "jest": {
+    "moduleNameMapper": {
+      "^axios$": "axios/dist/node/axios.cjs"
+    },
+    "collectCoverageFrom": [
+      "src/utils/**/*.js",
+      "src/api/**/*.js"
+    ]
+  }
 }
