@@ -1,0 +1,11 @@
+node_modules
+build
+coverage
+.env
+.env.*
+!.env.example
+.git
+.github
+Dockerfile
+*.md
+.DS_Store

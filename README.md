@@ -52,6 +52,32 @@ npm run build    # production build in build/
 ## Contact details
 The creator's WhatsApp number, Instagram and email are defined once in `src/config/contact.js` and used everywhere in the app.
 
+## Testing
+
+```bash
+npm run lint      # ESLint (react-app rules), fails on any warning
+npm test          # Jest in watch mode
+npm run test:ci   # single run with coverage, as in CI
+```
+
+## Docker
+
+```bash
+docker build -t stringed-dreams-frontend .
+docker run -p 3000:80 stringed-dreams-frontend
+```
+
+A two-stage build: Node 22 builds the app, then only the `build/` output is copied into an nginx image. nginx serves `index.html` for every client-side route, caches hashed `/static` files for a year, and proxies `/api/*` to `API_UPSTREAM` (default `http://api:5000`). To run the whole stack, use `docker compose --profile full up --build` from the backend repo.
+
+## CI/CD
+
+`.github/workflows/ci-cd.yml` runs on every push and pull request to `main`:
+
+1. **Lint & test**: ESLint and Jest, with a coverage report
+2. **Build**: `npm run build` with `CI=true`, so warnings fail the build
+3. **Docker**: builds the image, checks `/healthz`, `/` and a client-side route; on `main` pushes it to `ghcr.io/varun3124/stringed-dreams-frontend`
+4. **Deploy** (`main` pushes only): builds and deploys to Vercel production with the Vercel CLI (`VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` secrets)
+
 ## Deployment
 - `vercel.json` rewrites every path to `index.html` for client-side routing.
 - Set `REACT_APP_API_URL` to the deployed backend, and set the backend's `FRONTEND_URL` to this site's origin (for CORS).
